@@ -35,19 +35,12 @@ jobs:
       - name: Prebuild iOS Project
         run: |
           cd fe
-          npx expo prebuild --platform ios
+          npx expo prebuild --platform ios --no-install
 
-      - name: Debug - List Generated Files
+      - name: Install CocoaPods
         run: |
-          cd fe
-          echo "=== Root fe directory ==="
-          ls -la
-          echo "=== ios directory ==="
-          if [ -d "ios" ]; then
-            ls -la ios
-          else
-            echo "ios directory does not exist!"
-          fi
+          cd fe/ios
+          pod install
 
       - name: Build Unsigned Archive
         run: |
