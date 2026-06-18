@@ -1,0 +1,72 @@
+name: Build iOS Unsigned IPA
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build iOS IPA (Unsigned)
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 11.1.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: fe/pnpm-lock.yaml
+
+      - name: Install JS Dependencies
+        run: |
+          cd fe
+          pnpm install
+
+      - name: Prebuild iOS Project
+        run: |
+          cd fe
+          npx expo prebuild --platform ios
+
+      - name: Build Unsigned Archive
+        run: |
+          cd fe
+          WORKSPACE=$(ls ios/*.xcworkspace | head -n 1)
+          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list | grep -A 5 "Schemes:" | tail -n 1 | xargs)
+          echo "Workspace: $WORKSPACE, Scheme: $SCHEME"
+          
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/App.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE=""
+
+      - name: Package IPA
+        run: |
+          cd fe
+          mkdir -p build/Payload
+          cp -r build/App.xcarchive/Products/Applications/*.app build/Payload/
+          cd build
+          zip -r ../../personal-pos-scanner-unsigned.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: personal-pos-scanner-unsigned
+          path: personal-pos-scanner-unsigned.ipa
+          if-no-files-found: error
