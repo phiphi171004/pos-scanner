@@ -45,13 +45,9 @@ jobs:
       - name: Build Unsigned Archive
         run: |
           cd fe
-          WORKSPACE=$(ls ios/*.xcworkspace | head -n 1)
-          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list | grep -A 5 "Schemes:" | tail -n 1 | xargs)
-          echo "Workspace: $WORKSPACE, Scheme: $SCHEME"
-          
           xcodebuild \
-            -workspace "$WORKSPACE" \
-            -scheme "$SCHEME" \
+            -workspace ios/PersonalPOSScanner.xcworkspace \
+            -scheme PersonalPOSScanner \
             -configuration Release \
             -sdk iphoneos \
             -archivePath build/App.xcarchive \
