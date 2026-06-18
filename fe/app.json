@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Personal POS Scanner",
+    "slug": "personal-pos-scanner-fe",
+    "scheme": "personalpos",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.phi.personalposscanner",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Ứng dụng cần quyền sử dụng máy ảnh để quét mã vạch sản phẩm.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.phi.personalposscanner",
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
+    },
+    "plugins": [
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Ứng dụng cần quyền sử dụng máy ảnh để quét mã vạch sản phẩm."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "8f85c03b-fd0a-438a-927c-b957336cb0d7"
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+Starting project at C:\Users\Admin\Desktop\Phi\POS_Scanner_App_Spec\fe
+Starting Metro Bundler
+Waiting on http://localhost:8081
+Logs for your project will appear below.
+Web .\index.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web .\index.js ░░░░░░░░░░░░░░░░  1.0% (1/1)
+Web .\index.js ▓▓▓▓▓▓░░░░░░░░░░ 38.3% (17/36)
+Web .\index.js ▓▓▓▓▓▓▓▓▓▓▓░░░░░ 69.4% (35/42)
+Web .\index.js ▓▓▓▓▓▓▓▓▓▓▓░░░░░ 73.5% (36/42)
+Web .\index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 89.0% (120/129)
+Web .\index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 98.7% (310/315)
+Web .\index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.4% (323/324)
+Web .\index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (324/324)
+Web Bundled 36805ms index.js (326 modules)
+ LOG  [web] Logs will appear in the browser console
+Web .\index.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web Bundled 162ms index.js (1 module)
+ LOG  [web] Logs will appear in the browser console
+Web .\index.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web Bundled 254ms index.js (1 module)
+ LOG  [web] Logs will appear in the browser console
+Web .\index.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web Bundled 2370ms index.js (1 module)
+ LOG  [web] Logs will appear in the browser console
+Web .\index.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web Bundled 678ms index.js (1 module)
+ LOG  [web] Logs will appear in the browser console
+[ELIFECYCLE] Command failed with exit code 7.
