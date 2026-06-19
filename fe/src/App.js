@@ -23,7 +23,13 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { colors, radius, spacing, type } from './theme';
 import { matchingProducts, orders as orderSeed, products as productSeed, syncLogs } from './mockData';
 import * as api from './api';
-import * as SecureStore from 'expo-secure-store';
+// Conditional load of expo-secure-store to avoid crash when native module is missing
+let SecureStore = null;
+try {
+  SecureStore = require('expo-secure-store');
+} catch (e) {
+  console.warn('SecureStore module load error:', e);
+}
 
 // Safe wrapper for SecureStore with in-memory fallback to prevent native crashes
 const globalMemoryStorage = {};
