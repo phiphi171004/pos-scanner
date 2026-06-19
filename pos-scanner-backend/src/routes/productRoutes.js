@@ -3,6 +3,8 @@ const router = express.Router();
 const multer = require('multer');
 const productController = require('../controllers/productController');
 
+const { protect, authorize } = require('../middleware/authMiddleware');
+
 // Cấu hình multer để lưu trữ file tạm thời trong bộ nhớ (memoryStorage)
 // Sau đó chúng ta sẽ dùng Sharp để xử lý buffer này trước khi đẩy lên R2
 const upload = multer({
@@ -34,18 +36,18 @@ router.post('/', upload.single('image'), productController.createProduct);
  * @route   POST /api/products/import
  * @desc    Import sản phẩm từ JSON (không cần upload ảnh, dùng cho scraper)
  */
-router.post('/import', productController.importProduct);
+router.post('/import', protect, authorize('admin'), productController.importProduct);
 
 /**
  * @route   PUT /api/products/:id
  * @desc    Cập nhật thông tin sản phẩm hoặc thay đổi ảnh mới theo ID
  */
-router.put('/:id', upload.single('image'), productController.updateProduct);
+router.put('/:id', protect, authorize('admin'), upload.single('image'), productController.updateProduct);
 
 /**
  * @route   DELETE /api/products/:id
  * @desc    Xóa vĩnh viễn một sản phẩm khỏi hệ thống dựa trên ID
  */
-router.delete('/:id', productController.deleteProduct);
+router.delete('/:id', protect, authorize('admin'), productController.deleteProduct);
 
 module.exports = router;

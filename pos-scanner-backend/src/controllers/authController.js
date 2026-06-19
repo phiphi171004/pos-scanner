@@ -31,7 +31,8 @@ const sendTokenResponse = (user, statusCode, res) => {
         user: {
             id: user._id || user.id,
             name: user.name,
-            email: user.email
+            email: user.email,
+            role: user.role || 'user'
         }
     });
 };
@@ -40,16 +41,19 @@ const sendTokenResponse = (user, statusCode, res) => {
 // @route   POST /api/auth/register
 exports.register = async (req, res, next) => {
     if (global.dbFallback) {
-        const { name, email } = req.body;
-        return sendTokenResponse({ id: 'mock-user-id', name: name || 'User', email: email || 'user@example.com' }, 201, res);
+        const { name, email, role } = req.body;
+        const mockRole = role || (email === 'example@retail.com' ? 'admin' : 'user');
+        return sendTokenResponse({ id: 'mock-user-id', name: name || 'User', email: email || 'user@example.com', role: mockRole }, 201, res);
     }
     try {
-        const { name, email, password } = req.body;
-
+        const { name, email, password, role } = req.body;
+        const userRole = role || (email === 'example@retail.com' ? 'admin' : 'user');
+ 
         const user = await User.create({
             name,
             email,
             password,
+            role: userRole
         });
 
         sendTokenResponse(user, 201, res);
@@ -63,7 +67,8 @@ exports.register = async (req, res, next) => {
 exports.login = async (req, res, next) => {
     if (global.dbFallback) {
         const { email } = req.body;
-        return sendTokenResponse({ id: 'mock-user-id', name: 'Nguyễn Văn A', email: email || 'example@retail.com' }, 200, res);
+        const mockRole = email === 'example@retail.com' ? 'admin' : 'user';
+        return sendTokenResponse({ id: 'mock-user-id', name: 'Nguyễn Văn A', email: email || 'example@retail.com', role: mockRole }, 200, res);
     }
     try {
         const { email, password } = req.body;
@@ -177,7 +182,7 @@ exports.getMe = async (req, res, next) => {
     if (global.dbFallback) {
         return res.status(200).json({
             success: true,
-            data: { id: 'mock-user-id', name: 'Nguyễn Văn A', email: 'example@retail.com' }
+            data: { id: 'mock-user-id', name: 'Nguyễn Văn A', email: 'example@retail.com', role: 'admin' }
         });
     }
     try {

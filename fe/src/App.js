@@ -16,11 +16,51 @@ import {
   TextInput,
   View,
   Platform,
+  KeyboardAvoidingView,
+  Keyboard,
 } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { colors, radius, spacing, type } from './theme';
 import { matchingProducts, orders as orderSeed, products as productSeed, syncLogs } from './mockData';
 import * as api from './api';
+import * as SecureStore from 'expo-secure-store';
+
+// Safe wrapper for SecureStore with in-memory fallback to prevent native crashes
+const globalMemoryStorage = {};
+const secureStorage = {
+  getItem: async (key) => {
+    try {
+      if (Platform.OS !== 'web' && SecureStore && typeof SecureStore.getItemAsync === 'function') {
+        return await SecureStore.getItemAsync(key);
+      }
+    } catch (e) {
+      console.warn('SecureStore.getItemAsync failed, using memory fallback:', e.message);
+    }
+    return globalMemoryStorage[key] || null;
+  },
+  setItem: async (key, value) => {
+    try {
+      if (Platform.OS !== 'web' && SecureStore && typeof SecureStore.setItemAsync === 'function') {
+        await SecureStore.setItemAsync(key, value);
+        return;
+      }
+    } catch (e) {
+      console.warn('SecureStore.setItemAsync failed, using memory fallback:', e.message);
+    }
+    globalMemoryStorage[key] = value;
+  },
+  deleteItem: async (key) => {
+    try {
+      if (Platform.OS !== 'web' && SecureStore && typeof SecureStore.deleteItemAsync === 'function') {
+        await SecureStore.deleteItemAsync(key);
+        return;
+      }
+    } catch (e) {
+      console.warn('SecureStore.deleteItemAsync failed, using memory fallback:', e.message);
+    }
+    delete globalMemoryStorage[key];
+  }
+};
 
 // Conditional load of react-native-vision-camera to avoid crashing on Web
 let Camera = null;
@@ -51,7 +91,7 @@ export default function App() {
   const [scannedMatches, setScannedMatches] = useState([]);
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
-  const [apiIp, setApiIpState] = useState('localhost'); // Automatically binds to host on web
+  const [apiIp, setApiIpState] = useState('192.168.1.163'); // Automatically binds to host on web
 
   // 3D perspective state for Web
   const [tilt, setTilt] = useState({ x: 0, y: 0 });
@@ -72,6 +112,39 @@ export default function App() {
       }
     } catch (e) {}
   }, []);
+
+  // Restore token on startup & Auto login during local development in DEV mode
+  useEffect(() => {
+    const restoreToken = async () => {
+      try {
+        const savedToken = await secureStorage.getItem('userToken');
+        const savedUserStr = await secureStorage.getItem('userInfo');
+        if (savedToken && savedUserStr) {
+          const savedUser = JSON.parse(savedUserStr);
+          setToken(savedToken);
+          setUser(savedUser);
+          loadOrders(savedToken);
+          setScreen('home');
+          console.log('Restored login session for:', savedUser.email);
+        } else if (typeof __DEV__ !== 'undefined' && __DEV__) {
+          console.log('No saved session, trying dev auto-login...');
+          const res = await api.login('example@retail.com', '123456');
+          const tokenVal = res.accessToken || res.token;
+          if (tokenVal) {
+            await secureStorage.setItem('userToken', tokenVal);
+            await secureStorage.setItem('userInfo', JSON.stringify(res.user));
+            setToken(tokenVal);
+            setUser(res.user);
+            loadOrders(tokenVal);
+            setScreen('home');
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to restore token or auto-login:', err.message);
+      }
+    };
+    restoreToken();
+  }, [apiIp]);
 
   const handleIpChange = (newIp) => {
     api.setApiIp(newIp);
@@ -94,10 +167,16 @@ export default function App() {
     setScreen(nextScreen);
   };
 
-  const updateQuantity = (id, delta) => {
+  const updateQuantity = (id, val, isAbsolute = false) => {
     setCart((prev) =>
       prev
-        .map((item) => (item._id === id || item.id === id ? { ...item, quantity: item.quantity + delta } : item))
+        .map((item) => {
+          if (item._id === id || item.id === id) {
+            const nextQty = isAbsolute ? val : item.quantity + val;
+            return { ...item, quantity: nextQty };
+          }
+          return item;
+        })
         .filter((item) => item.quantity > 0)
     );
   };
@@ -106,9 +185,8 @@ export default function App() {
     setCart((prev) => {
       const found = prev.find((item) => item.barcode === product.barcode && item.supermarket === product.supermarket);
       if (found) {
-        return prev.map((item) =>
-          (item._id === found._id || item.id === found.id) ? { ...item, quantity: item.quantity + 1 } : item
-        );
+        // Keep the quantity exactly as is, do not auto-increment on repeated scans
+        return prev;
       }
       return [...prev, { ...product, id: product._id || product.id || `p-${Date.now()}`, quantity: 1 }];
     });
@@ -169,18 +247,21 @@ export default function App() {
 
   const handleAuth = async (credentials) => {
     try {
+      let res;
       if (authMode === 'login') {
-        const res = await api.login(credentials.email, credentials.password);
-        setToken(res.accessToken);
-        setUser(res.user);
-        loadOrders(res.accessToken);
+        res = await api.login(credentials.email, credentials.password);
       } else {
-        const res = await api.register(credentials.name, credentials.email, credentials.password);
-        setToken(res.accessToken);
-        setUser(res.user);
-        loadOrders(res.accessToken);
+        res = await api.register(credentials.name, credentials.email, credentials.password);
       }
-      navigate('home');
+      const tokenVal = res.accessToken || res.token;
+      if (tokenVal) {
+        await secureStorage.setItem('userToken', tokenVal);
+        await secureStorage.setItem('userInfo', JSON.stringify(res.user));
+        setToken(tokenVal);
+        setUser(res.user);
+        loadOrders(tokenVal);
+        navigate('home');
+      }
     } catch (err) {
       alert(err.message);
     }
@@ -226,8 +307,13 @@ export default function App() {
         return (
           <HomeScreen
             userName={user ? user.name : 'Nguyễn Văn A'}
+            isAdmin={user && user.role === 'admin'}
             orders={orders}
-            onLogout={() => {
+            onLogout={async () => {
+              try {
+                await secureStorage.deleteItem('userToken');
+                await secureStorage.deleteItem('userInfo');
+              } catch (e) {}
               setToken(null);
               setUser(null);
               setCart([]);
@@ -265,12 +351,13 @@ export default function App() {
           <ContributionScreen 
             onBack={() => navigate('home')} 
             onSave={handleContributionSave}
+            isAdmin={user && user.role === 'admin'}
           />
         );
       case 'order':
         return <OrderDetailScreen order={activeOrder} onBack={() => navigate('home')} />;
       case 'admin':
-        return <AdminScreen onBack={() => navigate('home')} token={token} />;
+        return <AdminScreen onBack={() => navigate('home')} token={token} />;// admin case has implicit admin access
       default:
         return null;
     }
@@ -391,10 +478,10 @@ function AuthScreen({ mode, setMode, apiIp, onIpChange, onDone }) {
   );
 }
 
-function HomeScreen({ userName, orders, onLogout, onScan, onContribute, onAdmin, onOrder }) {
+function HomeScreen({ userName, isAdmin, orders, onLogout, onScan, onContribute, onAdmin, onOrder }) {
   return (
-    <AppScaffold active="scan">
-      <Header title={`Xin chào, ${userName}`} rightIcon="logout" onRight={onLogout} />
+    <AppScaffold active="scan" isAdmin={isAdmin}>
+      <Header title={`Xin chào, ${userName} (${isAdmin ? 'Admin' : 'User'})`} rightIcon="logout" onRight={onLogout} />
       <ScrollView contentContainerStyle={styles.contentWithNav} showsVerticalScrollIndicator={false}>
         <View style={styles.actionGrid}>
           <ActionTile
@@ -411,15 +498,17 @@ function HomeScreen({ userName, orders, onLogout, onScan, onContribute, onAdmin,
           />
         </View>
         
-        <Pressable style={styles.adminBanner} onPress={onAdmin}>
-          <View>
-            <Text style={styles.kicker}>Admin tools</Text>
-            <Text style={styles.bodyStrong}>Đồng bộ dữ liệu sản phẩm</Text>
-          </View>
-          <View style={styles.storeIcon}>
-            <MaterialCommunityIcons name="database-sync-outline" size={22} color={colors.primary} />
-          </View>
-        </Pressable>
+        {isAdmin && (
+          <Pressable style={styles.adminBanner} onPress={onAdmin}>
+            <View>
+              <Text style={styles.kicker}>Admin tools</Text>
+              <Text style={styles.bodyStrong}>Đồng bộ dữ liệu sản phẩm</Text>
+            </View>
+            <View style={styles.storeIcon}>
+              <MaterialCommunityIcons name="database-sync-outline" size={22} color={colors.primary} />
+            </View>
+          </Pressable>
+        )}
         
         <SectionHeader title="Lịch sử đơn hàng" icon="refresh" />
         {orders.length === 0 ? (
@@ -469,8 +558,13 @@ function ScannerScreen({ cart, cartCount, cartTotal, onBack, onManual, onMultiMa
   }) : null;
 
   return (
-    <View style={styles.scannerRoot}>
-      <View style={styles.fakeCamera}>
+    <KeyboardAvoidingView 
+      style={{ flex: 1 }}
+      contentContainerStyle={{ flex: 1 }}
+      behavior={Platform.OS === 'ios' ? 'position' : 'height'}
+    >
+      <View style={styles.scannerRoot}>
+        <Pressable style={styles.fakeCamera} onPress={Keyboard.dismiss}>
         {Platform.OS !== 'web' && hasPermission && device && Camera ? (
           <Camera
             style={StyleSheet.absoluteFill}
@@ -500,7 +594,7 @@ function ScannerScreen({ cart, cartCount, cartTotal, onBack, onManual, onMultiMa
         <Pressable style={styles.testScanButton} onPress={onMultiMatch}>
           <Text style={styles.testScanText}>Mô phỏng: Quét Maggi (nhiều KQ)</Text>
         </Pressable>
-      </View>
+        </Pressable>
       <View style={styles.cartSheet}>
         <View style={styles.handle} />
         <View style={styles.sheetHeader}>
@@ -523,11 +617,12 @@ function ScannerScreen({ cart, cartCount, cartTotal, onBack, onManual, onMultiMa
           disabled={cart.length === 0}
         />
       </View>
-    </View>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
-function ContributionScreen({ onBack, onSave }) {
+function ContributionScreen({ onBack, onSave, isAdmin }) {
   const [barcode, setBarcode] = useState('');
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
@@ -543,7 +638,7 @@ function ContributionScreen({ onBack, onSave }) {
   };
 
   return (
-    <AppScaffold active="inventory">
+    <AppScaffold active="inventory" isAdmin={isAdmin}>
       <Header title="Đóng góp sản phẩm" leftIcon="arrow-left" onLeft={onBack} />
       <ScrollView contentContainerStyle={styles.contentWithNav} showsVerticalScrollIndicator={false}>
         <View style={styles.panel}>
@@ -620,7 +715,7 @@ function AdminScreen({ onBack, token }) {
   };
 
   return (
-    <AppScaffold active="inventory">
+    <AppScaffold active="inventory" isAdmin={true}>
       <Header title="Hệ thống quản trị" leftIcon="arrow-left" onLeft={onBack} />
       <ScrollView contentContainerStyle={styles.contentWithNav} showsVerticalScrollIndicator={false}>
         <View style={styles.panel}>
@@ -749,11 +844,11 @@ function ManualEntryModal({ visible, barcode, onClose, onSave }) {
   );
 }
 
-function AppScaffold({ children, active }) {
+function AppScaffold({ children, active, isAdmin }) {
   return (
     <SafeAreaView style={styles.screen}>
       {children}
-      <BottomNav active={active} />
+      <BottomNav active={active} isAdmin={isAdmin} />
     </SafeAreaView>
   );
 }
@@ -773,10 +868,10 @@ function Header({ title, leftIcon, rightIcon, onLeft, onRight }) {
   );
 }
 
-function BottomNav({ active }) {
+function BottomNav({ active, isAdmin }) {
   const items = [
     ['scan', 'barcode-scan', 'Scan'],
-    ['inventory', 'archive-outline', 'Inventory'],
+    ...(isAdmin ? [['inventory', 'archive-outline', 'Inventory']] : []),
     ['cart', 'cart-outline', 'Cart'],
     ['history', 'history', 'History'],
   ];
@@ -900,6 +995,26 @@ function OrderCard({ order, onPress }) {
 }
 
 function CartItem({ item, onQuantity }) {
+  const [localQty, setLocalQty] = useState(String(item.quantity));
+
+  useEffect(() => {
+    setLocalQty(String(item.quantity));
+  }, [item.quantity]);
+
+  const handleChangeText = (text) => {
+    const cleaned = text.replace(/[^0-9]/g, '');
+    setLocalQty(cleaned);
+  };
+
+  const handleBlur = () => {
+    const parsed = parseInt(localQty, 10);
+    if (isNaN(parsed) || parsed <= 0) {
+      onQuantity(item._id || item.id, 0, true);
+    } else {
+      onQuantity(item._id || item.id, parsed, true);
+    }
+  };
+
   return (
     <View style={styles.cartItem}>
       <ProductMark />
@@ -912,7 +1027,16 @@ function CartItem({ item, onQuantity }) {
         <Pressable style={styles.stepperBtn} onPress={() => onQuantity(item._id || item.id, -1)}>
           <MaterialCommunityIcons name="minus" size={14} color="#ffffff" />
         </Pressable>
-        <Text style={styles.stepperText}>{item.quantity}</Text>
+        <TextInput
+          style={styles.stepperInput}
+          value={localQty}
+          onChangeText={handleChangeText}
+          onBlur={handleBlur}
+          onSubmitEditing={handleBlur}
+          keyboardType="number-pad"
+          selectTextOnFocus
+          placeholderTextColor="rgba(255, 255, 255, 0.3)"
+        />
         <Pressable style={styles.stepperBtn} onPress={() => onQuantity(item._id || item.id, 1)}>
           <MaterialCommunityIcons name="plus" size={14} color="#ffffff" />
         </Pressable>
@@ -1613,6 +1737,18 @@ const styles = StyleSheet.create({
   stepperText: {
     ...type.code,
     color: '#ffffff',
+  },
+  stepperInput: {
+    ...type.code,
+    color: '#ffffff',
+    textAlign: 'center',
+    minWidth: 32,
+    padding: 0,
+    ...Platform.select({
+      web: {
+        outlineStyle: 'none',
+      }
+    })
   },
   modalBackdrop: {
     flex: 1,

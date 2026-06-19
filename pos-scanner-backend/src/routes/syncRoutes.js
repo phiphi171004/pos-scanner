@@ -1,14 +1,15 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
     syncProducts,
     getScraperConfig,
     updateScraperConfig,
 } = require('../controllers/syncController');
 
-// Tất cả route admin cần đăng nhập
+// Tất cả route admin cần đăng nhập và có quyền admin
 router.use(protect);
+router.use(authorize('admin'));
 
 /**
  * @route   POST /api/admin/sync-products

@@ -1,5 +1,5 @@
 const PORT = '5000';
-let BASE_URL = `http://localhost:${PORT}/api`;
+let BASE_URL = `http://192.168.1.163:${PORT}/api`;
 
 // Check if running on web and set appropriate host
 if (typeof window !== 'undefined' && window.location) {
