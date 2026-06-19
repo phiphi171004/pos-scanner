@@ -28,7 +28,8 @@
         {
           "cameraPermissionText": "Ứng dụng cần quyền sử dụng máy ảnh để quét mã vạch sản phẩm."
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "extra": {
       "eas": {
