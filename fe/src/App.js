@@ -119,7 +119,7 @@ export default function App() {
     } catch (e) {}
   }, []);
 
-  // Restore token on startup & Auto login during local development in DEV mode
+  // Restore token on startup
   useEffect(() => {
     const restoreToken = async () => {
       try {
@@ -132,21 +132,9 @@ export default function App() {
           loadOrders(savedToken);
           setScreen('home');
           console.log('Restored login session for:', savedUser.email);
-        } else if (typeof __DEV__ !== 'undefined' && __DEV__) {
-          console.log('No saved session, trying dev auto-login...');
-          const res = await api.login('example@retail.com', '123456');
-          const tokenVal = res.accessToken || res.token;
-          if (tokenVal) {
-            await secureStorage.setItem('userToken', tokenVal);
-            await secureStorage.setItem('userInfo', JSON.stringify(res.user));
-            setToken(tokenVal);
-            setUser(res.user);
-            loadOrders(tokenVal);
-            setScreen('home');
-          }
         }
       } catch (err) {
-        console.warn('Failed to restore token or auto-login:', err.message);
+        console.warn('Failed to restore token:', err.message);
       }
     };
     restoreToken();
