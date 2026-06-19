@@ -227,7 +227,8 @@ export default function App() {
     try {
       const orderItems = cart.map(item => ({
         product: item._id || item.id,
-        quantity: item.quantity
+        quantity: item.quantity,
+        priceAtTime: item.price
       }));
       const supermarket = cart[0]?.supermarket || 'Khác';
       await api.createOrder({ items: orderItems, totalAmount: cartTotal, supermarket }, token);
