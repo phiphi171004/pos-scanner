@@ -40,6 +40,7 @@ exports.createOrder = async (req, res) => {
         const { items, totalAmount, supermarket } = req.body;
         
         const newOrder = new Order({
+            user: req.user._id,
             items,
             totalAmount,
             supermarket
@@ -58,7 +59,7 @@ exports.getOrders = async (req, res) => {
         return res.json(localOrders);
     }
     try {
-        const orders = await Order.find().populate('items.product').sort({ createdAt: -1 });
+        const orders = await Order.find({ user: req.user._id }).populate('items.product').sort({ createdAt: -1 });
         res.json(orders);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -75,7 +76,7 @@ exports.getOrderById = async (req, res) => {
         return res.json(order);
     }
     try {
-        const order = await Order.findById(req.params.id).populate('items.product');
+        const order = await Order.findOne({ _id: req.params.id, user: req.user._id }).populate('items.product');
         if (!order) {
             return res.status(404).json({ message: 'Order not found' });
         }
