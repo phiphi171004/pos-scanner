@@ -5,30 +5,47 @@ const scraperConfigSchema = new mongoose.Schema({
         type: String,
         required: true,
         unique: true,
-        default: 'sieuthi-go',
     },
     apiUrl: {
         type: String,
-        default: 'https://sieuthi-go.vn/api/order2_listProduct?platform=2&lang=vi',
+        default: '',
     },
     storeId: {
+        type: String,
+        default: '',
+    },
+    provinceId: {
         type: Number,
-        default: 123,
+        default: null,
+    },
+    storeCode: {
+        type: String,
+        default: '',
+    },
+    storeGroupCode: {
+        type: String,
+        default: '',
     },
     supermarketName: {
         type: String,
-        default: 'Big C',
+        default: '',
     },
     cookie: {
         type: String,
         default: '',
     },
     headers: {
+        // sieuthi-go fields
         token: { type: String, default: '' },
         sign: { type: String, default: '' },
         xCsrfToken: { type: String, default: '' },
         xSignature: { type: String, default: '' },
-        apiclientid: { type: String, default: '8465102' },
+        apiclientid: { type: String, default: '' },
+        
+        // sieuthi-bhx fields
+        authorization: { type: String, default: '' },
+        deviceid: { type: String, default: '' },
+        xapikey: { type: String, default: '' },
     },
     lastSyncAt: {
         type: Date,
@@ -43,3 +60,4 @@ const scraperConfigSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 module.exports = mongoose.model('ScraperConfig', scraperConfigSchema);
+

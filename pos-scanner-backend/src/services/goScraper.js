@@ -11,7 +11,13 @@ const DELAY_MS = 1500;
 async function getConfig() {
     let config = await ScraperConfig.findOne({ name: 'sieuthi-go' });
     if (!config) {
-        config = await ScraperConfig.create({ name: 'sieuthi-go' });
+        config = await ScraperConfig.create({ 
+            name: 'sieuthi-go',
+            apiUrl: 'https://sieuthi-go.vn/api/order2_listProduct?platform=2&lang=vi'
+        });
+    } else if (!config.apiUrl) {
+        config.apiUrl = 'https://sieuthi-go.vn/api/order2_listProduct?platform=2&lang=vi';
+        await config.save();
     }
     return config;
 }
@@ -49,6 +55,7 @@ function buildHeaders(config, includeSignature = true) {
  * Gọi API lấy sản phẩm 1 trang
  */
 async function fetchPage(config, page = 1) {
+    console.log(`fetchPage - Page: ${page}, config.headers.token: "${config.headers?.token}"`);
     const payload = {
         filter_by: 'best_seller',
         page,
@@ -60,21 +67,107 @@ async function fetchPage(config, page = 1) {
         lang: 'vi',
     };
 
-    const headers = buildHeaders(config);
+    let currentCookie = config.cookie || '';
+    let url = config.apiUrl;
+    let redirectCount = 0;
+    let response = null;
+    let cookieChanged = false;
 
-    const res = await axios.post(config.apiUrl, payload, {
-        headers,
-        timeout: 15000,
-    });
+    while (redirectCount < 5) {
+        const headers = buildHeaders(config);
+        if (currentCookie) {
+            headers['cookie'] = currentCookie;
+        }
+        console.log(`fetchPage - Page ${page} (Attempt ${redirectCount + 1}) headers:`, JSON.stringify(headers, null, 2));
 
-    if (res.data && res.data.status === 'success') {
+        const res = await axios.post(url, payload, {
+            headers,
+            timeout: 15000,
+            maxRedirects: 0,
+            validateStatus: () => true
+        });
+
+        if (res.status === 307 || res.status === 302 || res.status === 301) {
+            const setCookies = res.headers['set-cookie'];
+            if (setCookies) {
+                setCookies.forEach(sc => {
+                    const cookiePart = sc.split(';')[0];
+                    const eqIdx = cookiePart.indexOf('=');
+                    if (eqIdx !== -1) {
+                        const cookieName = cookiePart.substring(0, eqIdx);
+                        const cleanName = cookieName.trim();
+                        // Tránh ký tự regex đặc biệt
+                        const escapedCleanName = cleanName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+                        const cookieRegex = new RegExp(`${escapedCleanName}\\s*=\\s*[^;]*;?\\s*`, 'g');
+                        currentCookie = currentCookie.replace(cookieRegex, '').trim();
+                        if (currentCookie && !currentCookie.endsWith(';')) {
+                            currentCookie += ';';
+                        }
+                        currentCookie = `${cookiePart}; ${currentCookie}`.trim();
+                        cookieChanged = true;
+                    }
+                });
+            }
+            url = res.headers['location'] || url;
+            redirectCount++;
+        } else {
+            response = res;
+            break;
+        }
+    }
+
+    if (!response) {
+        throw new Error('Lỗi chuyển hướng quá giới hạn (Max redirects exceeded)');
+    }
+
+    if (cookieChanged) {
+        config.cookie = currentCookie;
+        await config.save();
+    }
+
+    if (response.data && response.data.status === 'success') {
         return {
-            products: res.data.products || [],
-            pagination: res.data.pagination || {},
+            products: response.data.products || [],
+            pagination: response.data.pagination || {},
         };
     }
 
-    throw new Error(res.data?.message || 'API trả về lỗi không xác định');
+    throw new Error(response.data?.message || `API trả về status code ${response.status}`);
+}
+
+/**
+ * Nhận dạng xem có phải thực phẩm tươi sống biến động (thịt, cá, rau củ...) hay không
+ */
+function isFreshFood(raw) {
+    // 1. Kiểm tra mã vạch nội bộ GS1 (mã cân ký tại quầy)
+    const barcode = String(raw.barcode || '').trim();
+    if (!barcode) return true;
+    if (barcode.startsWith('2')) return true; // Đầu số 2 dành cho mã cân nội bộ
+
+
+    // 2. Kiểm tra hạn sử dụng ngắn ngày trong chi tiết (detail)
+    if (Array.isArray(raw.detail)) {
+        const hsdObj = raw.detail.find(d => d && (d.name === 'Hạn sử dụng' || d.name === 'HSD'));
+        if (hsdObj && hsdObj.value) {
+            const hsdValue = String(hsdObj.value).toLowerCase();
+            // Nếu có chữ "ngày" hoặc "ngay"
+            if (hsdValue.includes('ngày') || hsdValue.includes('ngay')) {
+                const daysMatch = hsdValue.match(/(\d+)\s*ngày/);
+                if (daysMatch) {
+                    const days = parseInt(daysMatch[1], 10);
+                    // Dưới 15 ngày thì coi là thực phẩm tươi sống biến động cần loại trừ
+                    if (days <= 15) return true;
+                } else {
+                    // Nếu chỉ ghi chung dạng "trong ngày" hoặc "kể từ ngày sản xuất" mà không có tháng/năm
+                    if ((hsdValue.includes('kể từ ngày sản xuất') || hsdValue.includes('ke tu ngay san xuat') || hsdValue.includes('trong ngày') || hsdValue.includes('trong ngay')) &&
+                        !hsdValue.includes('tháng') && !hsdValue.includes('thang') && !hsdValue.includes('năm') && !hsdValue.includes('nam')) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
 }
 
 /**
@@ -128,8 +221,17 @@ async function syncProducts(progressCallback) {
         }
     }
 
-    // Lọc có barcode + loại trùng
-    const withBarcode = allProducts.filter(p => p.barcode);
+    // Lọc có barcode + không phải tươi sống + loại trùng
+    let freshFilteredCount = 0;
+    const withBarcode = allProducts.filter(p => {
+        if (!p.barcode) return false;
+        if (isFreshFood(p)) {
+            freshFilteredCount++;
+            return false;
+        }
+        return true;
+    });
+
     const uniqueMap = new Map();
     for (const p of withBarcode) {
         const key = String(p.barcode);
@@ -139,7 +241,7 @@ async function syncProducts(progressCallback) {
     }
     const uniqueProducts = Array.from(uniqueMap.values());
 
-    log(`Tổng: ${allProducts.length} sp, có barcode: ${withBarcode.length}, unique: ${uniqueProducts.length}`);
+    log(`Tổng: ${allProducts.length} sp, lọc bỏ ${freshFilteredCount} sp tươi sống, unique: ${uniqueProducts.length}`);
 
     // Import vào MongoDB
     let created = 0, skipped = 0, failed = 0;
@@ -148,8 +250,15 @@ async function syncProducts(progressCallback) {
     for (const raw of uniqueProducts) {
         const product = normalizeProduct(raw, config.supermarketName);
         try {
-            const existing = await Product.findOne({ barcode: product.barcode, supermarket: product.supermarket });
+            const existing = await Product.findOne({ 
+                barcode: product.barcode, 
+                supermarket: { $in: ['GO!', 'Big C'] } 
+            });
             if (existing) {
+                if (existing.supermarket !== product.supermarket) {
+                    existing.supermarket = product.supermarket;
+                    await existing.save();
+                }
                 skipped++;
                 continue;
             }

@@ -1,4 +1,4 @@
-export const colors = {
+export const darkColors = {
   // Dark first Neutral tokens (Slate)
   background: '#090D16',       // Deep Slate background
   surface: '#111827',          // Slate Surface
@@ -34,12 +34,56 @@ export const colors = {
   white: '#F9FAFB',
   black: '#090D16',
   shadow: 'rgba(0, 0, 0, 0.4)',
+  placeholder: 'rgba(255, 255, 255, 0.3)',
   
   // Translucent colors for glassmorphism
   glassBg: 'rgba(255, 255, 255, 0.03)',
   glassBorder: 'rgba(255, 255, 255, 0.08)',
   glassBgActive: 'rgba(255, 255, 255, 0.1)',
+  glassPanelBg: 'rgba(17, 24, 39, 0.75)',
 };
+
+export const lightColors = {
+  background: '#F8FAFC',       // Slate 50 light background
+  surface: '#FFFFFF',          // White Surface
+  surfaceDim: '#F1F5F9',       // Slate 100
+  surfaceLow: '#F8FAFC',
+  surfaceContainer: '#F1F5F9',
+  surfaceHigh: '#E2E8F0',
+  onSurface: '#0F172A',         // Slate 900
+  onSurfaceVariant: '#64748B',  // Slate 500
+  
+  primary: '#2563EB',           // Keep primary blue
+  primaryContainer: '#3B82F6',  
+  secondary: '#64748B',         
+  outline: '#E2E8F0',           
+  outlineVariant: '#CBD5E1',    
+  
+  success: '#059669',
+  successSoft: '#D1FAE5',
+  successMedium: '#10B981',
+  successStrong: '#059669',
+  error: '#DC2626',
+  errorSoft: '#FEE2E2',
+  errorMedium: '#EF4444',
+  errorStrong: '#DC2626',
+  tertiary: '#D97706',
+  warningSoft: '#FEF3C7',
+  warningMedium: '#F59E0B',
+  warningStrong: '#D97706',
+
+  white: '#FFFFFF',
+  black: '#0F172A',
+  shadow: 'rgba(0, 0, 0, 0.05)',
+  placeholder: 'rgba(15, 23, 42, 0.3)',
+  
+  glassBg: 'rgba(255, 255, 255, 0.7)',
+  glassBorder: 'rgba(0, 0, 0, 0.06)',
+  glassBgActive: 'rgba(0, 0, 0, 0.03)',
+  glassPanelBg: 'rgba(255, 255, 255, 0.75)',
+};
+
+export const colors = darkColors;
 
 export const radius = {
   sm: 6,      

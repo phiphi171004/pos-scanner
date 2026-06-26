@@ -56,10 +56,32 @@ let localProducts = [
 // Get all products
 exports.getAllProducts = async (req, res) => {
     if (global.dbFallback) {
-        return res.json(localProducts);
+        let results = [...localProducts];
+        const search = req.query.search;
+        if (search) {
+            const q = search.toLowerCase();
+            results = results.filter(p => 
+                (p.name && p.name.toLowerCase().includes(q)) ||
+                (p.barcode && p.barcode.includes(q)) ||
+                (p.supermarket && p.supermarket.toLowerCase().includes(q))
+            );
+        }
+        return res.json(results.slice(0, 50));
     }
     try {
-        const products = await Product.find().sort({ createdAt: -1 });
+        const search = req.query.search;
+        const limit = parseInt(req.query.limit) || 50;
+        let query = {};
+        if (search) {
+            query = {
+                $or: [
+                    { name: { $regex: search, $options: 'i' } },
+                    { barcode: { $regex: search, $options: 'i' } },
+                    { supermarket: { $regex: search, $options: 'i' } }
+                ]
+            };
+        }
+        const products = await Product.find(query).sort({ createdAt: -1 }).limit(limit);
         res.json(products);
     } catch (error) {
         res.status(500).json({ message: error.message });

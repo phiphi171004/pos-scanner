@@ -3,7 +3,7 @@
 // MOTION_INTENSITY: 4
 // VISUAL_DENSITY: 5
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import {
@@ -18,17 +18,20 @@ import {
   Platform,
   KeyboardAvoidingView,
   Keyboard,
+  Switch,
+  ActivityIndicator,
+  Image,
 } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { colors, radius, spacing, type } from './theme';
+import { darkColors, lightColors, radius, spacing, type } from './theme';
+let colors = darkColors;
 import { matchingProducts, orders as orderSeed, products as productSeed, syncLogs } from './mockData';
 import * as api from './api';
-// Conditional load of expo-secure-store to avoid crash when native module is missing
 let SecureStore = null;
 try {
   SecureStore = require('expo-secure-store');
 } catch (e) {
-  console.warn('SecureStore module load error:', e);
+  console.warn('SecureStore module load error in App.js:', e);
 }
 
 // Safe wrapper for SecureStore with in-memory fallback to prevent native crashes
@@ -39,6 +42,9 @@ const secureStorage = {
       if (Platform.OS !== 'web' && SecureStore && typeof SecureStore.getItemAsync === 'function') {
         return await SecureStore.getItemAsync(key);
       }
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return window.localStorage.getItem(key);
+      }
     } catch (e) {
       console.warn('SecureStore.getItemAsync failed, using memory fallback:', e.message);
     }
@@ -48,6 +54,10 @@ const secureStorage = {
     try {
       if (Platform.OS !== 'web' && SecureStore && typeof SecureStore.setItemAsync === 'function') {
         await SecureStore.setItemAsync(key, value);
+        return;
+      }
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(key, value);
         return;
       }
     } catch (e) {
@@ -61,12 +71,27 @@ const secureStorage = {
         await SecureStore.deleteItemAsync(key);
         return;
       }
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem(key);
+        return;
+      }
     } catch (e) {
       console.warn('SecureStore.deleteItemAsync failed, using memory fallback:', e.message);
     }
     delete globalMemoryStorage[key];
   }
 };
+
+// Safe wrapper for ActivityIndicator to prevent ReferenceError / crashes in some React Native Web / bundler environments
+const SafeActivityIndicator = ({ size = 'large', color, style }) => {
+  try {
+    if (ActivityIndicator) {
+      return <ActivityIndicator size={size} color={color} style={style} />;
+    }
+  } catch (e) {}
+  return <Text style={[{ color: color || '#888', textAlign: 'center', fontWeight: '500' }, style]}>Đang tải...</Text>;
+};
+
 
 // Conditional load of react-native-vision-camera to avoid crashing on Web
 let Camera = null;
@@ -97,10 +122,38 @@ export default function App() {
   const [scannedMatches, setScannedMatches] = useState([]);
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
-  const [apiIp, setApiIpState] = useState('192.168.1.163'); // Automatically binds to host on web
+  const [isDark, setIsDark] = useState(true);
+  const [detailProduct, setDetailProduct] = useState(null);
 
   // 3D perspective state for Web
   const [tilt, setTilt] = useState({ x: 0, y: 0 });
+
+  // Load theme preference on startup
+  useEffect(() => {
+    const restoreTheme = async () => {
+      try {
+        const savedTheme = await secureStorage.getItem('isDarkMode');
+        if (savedTheme !== null) {
+          setIsDark(savedTheme === 'true');
+        }
+      } catch (err) {
+        console.warn('Failed to restore theme preference:', err.message);
+      }
+    };
+    restoreTheme();
+  }, []);
+
+  const toggleTheme = async () => {
+    const nextDark = !isDark;
+    setIsDark(nextDark);
+    try {
+      await secureStorage.setItem('isDarkMode', nextDark ? 'true' : 'false');
+    } catch (e) {}
+  };
+
+  // Dynamically update the global colors and styles references before render
+  colors = isDark ? darkColors : lightColors;
+  styles = createStyles(colors);
 
   const cartTotal = useMemo(
     () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
@@ -117,6 +170,32 @@ export default function App() {
         setApiIpState(match[1]);
       }
     } catch (e) {}
+  }, []);
+
+  // Listen to silent refresh and session expiration events from api.js
+  useEffect(() => {
+    const handleTokenRefreshed = (newToken) => {
+      console.log('React state sync: token refreshed silent');
+      setToken(newToken);
+    };
+
+    const handleSessionExpired = () => {
+      console.warn('Session expired. Redirecting to login screen.');
+      setToken(null);
+      setUser(null);
+      setCart([]);
+      setOrders([]);
+      navigate('auth');
+      alert('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.');
+    };
+
+    api.addTokenRefreshListener(handleTokenRefreshed);
+    api.addSessionExpiredListener(handleSessionExpired);
+
+    return () => {
+      api.removeTokenRefreshListener(handleTokenRefreshed);
+      api.removeSessionExpiredListener(handleSessionExpired);
+    };
   }, []);
 
   // Restore token on startup
@@ -138,12 +217,7 @@ export default function App() {
       }
     };
     restoreToken();
-  }, [apiIp]);
-
-  const handleIpChange = (newIp) => {
-    api.setApiIp(newIp);
-    setApiIpState(newIp);
-  };
+  }, []);
 
   const loadOrders = async (userToken) => {
     try {
@@ -251,6 +325,9 @@ export default function App() {
       const tokenVal = res.accessToken || res.token;
       if (tokenVal) {
         await secureStorage.setItem('userToken', tokenVal);
+        if (res.refreshToken) {
+          await secureStorage.setItem('refreshToken', res.refreshToken);
+        }
         await secureStorage.setItem('userInfo', JSON.stringify(res.user));
         setToken(tokenVal);
         setUser(res.user);
@@ -293,8 +370,6 @@ export default function App() {
           <AuthScreen 
             mode={authMode} 
             setMode={setAuthMode} 
-            apiIp={apiIp}
-            onIpChange={handleIpChange}
             onDone={handleAuth} 
           />
         );
@@ -304,9 +379,24 @@ export default function App() {
             userName={user ? user.name : 'Nguyễn Văn A'}
             isAdmin={user && user.role === 'admin'}
             orders={orders}
+            onScan={() => navigate('scanner')}
+            onContribute={() => navigate('contribute')}
+            onAdmin={() => navigate('admin')}
+            onOrder={(order) => {
+              setActiveOrder(order);
+              navigate('order');
+            }}
+            onNavigate={navigate}
+          />
+        );
+      case 'profile':
+        return (
+          <ProfileScreen
+            user={user}
             onLogout={async () => {
               try {
                 await secureStorage.deleteItem('userToken');
+                await secureStorage.deleteItem('refreshToken');
                 await secureStorage.deleteItem('userInfo');
               } catch (e) {}
               setToken(null);
@@ -315,13 +405,9 @@ export default function App() {
               setOrders([]);
               navigate('auth');
             }}
-            onScan={() => navigate('scanner')}
-            onContribute={() => navigate('contribute')}
-            onAdmin={() => navigate('admin')}
-            onOrder={(order) => {
-              setActiveOrder(order);
-              navigate('order');
-            }}
+            onNavigate={navigate}
+            isDark={isDark}
+            onToggleTheme={toggleTheme}
           />
         );
       case 'scanner':
@@ -339,6 +425,7 @@ export default function App() {
             onQuantity={updateQuantity}
             onCheckout={handleCheckout}
             onScan={handleScan}
+            onProductDetail={setDetailProduct}
           />
         );
       case 'contribute':
@@ -350,9 +437,9 @@ export default function App() {
           />
         );
       case 'order':
-        return <OrderDetailScreen order={activeOrder} onBack={() => navigate('home')} />;
+        return <OrderDetailScreen order={activeOrder} onBack={() => navigate('home')} onProductDetail={setDetailProduct} />;
       case 'admin':
-        return <AdminScreen onBack={() => navigate('home')} token={token} />;// admin case has implicit admin access
+        return <AdminScreen onBack={() => navigate('home')} token={token} onProductDetail={setDetailProduct} />;// admin case has implicit admin access
       default:
         return null;
     }
@@ -360,7 +447,7 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <StatusBar style="light" />
+      <StatusBar style={isDark ? "light" : "dark"} />
       <View 
         style={styles.rootContainer}
         {...(Platform.OS === 'web' ? {
@@ -408,26 +495,24 @@ export default function App() {
           onClose={() => setManualOpen(false)}
           onSave={handleManualSave}
         />
+        <ProductDetailModal
+          visible={!!detailProduct}
+          product={detailProduct}
+          onClose={() => setDetailProduct(null)}
+        />
       </View>
     </SafeAreaProvider>
   );
 }
 
-function AuthScreen({ mode, setMode, apiIp, onIpChange, onDone }) {
+function AuthScreen({ mode, setMode, onDone }) {
   const isLogin = mode === 'login';
   const [name, setName] = useState('');
   const [email, setEmail] = useState('example@retail.com');
   const [password, setPassword] = useState('123456');
-  const [showConfig, setShowConfig] = useState(false);
-  const [ipVal, setIpVal] = useState(apiIp);
 
   const handleSubmit = () => {
     onDone({ name, email, password });
-  };
-
-  const handleSaveIp = () => {
-    onIpChange(ipVal);
-    setShowConfig(false);
   };
 
   return (
@@ -440,27 +525,13 @@ function AuthScreen({ mode, setMode, apiIp, onIpChange, onDone }) {
           <Text style={styles.appTitle}>POS Scanner</Text>
           <Text style={styles.kicker}>Hệ thống quét cá nhân</Text>
 
-          {showConfig ? (
-            <View style={styles.panel}>
-              <Text style={styles.sectionTitle}>Cấu hình API IP</Text>
-              <Field icon="server" value={ipVal} onChangeText={setIpVal} placeholder="IP Address (e.g. 192.168.1.10)" />
-              <PrimaryButton label="Lưu IP" icon="check" onPress={handleSaveIp} />
-            </View>
-          ) : (
-            <View style={styles.panel}>
-              <Text style={styles.sectionTitle}>{isLogin ? 'Đăng nhập' : 'Tạo tài khoản mới'}</Text>
-              {!isLogin && <Field icon="account" placeholder="Nguyễn Văn A" value={name} onChangeText={setName} />}
-              <Field icon="email-outline" placeholder="example@retail.com" keyboardType="email-address" value={email} onChangeText={setEmail} />
-              <Field icon="lock-outline" placeholder="Mật khẩu" secureTextEntry value={password} onChangeText={setPassword} />
-              <PrimaryButton label={isLogin ? 'Đăng nhập' : 'Đăng ký'} icon="arrow-right" onPress={handleSubmit} />
-            </View>
-          )}
-
-          <Pressable style={styles.configChip} onPress={() => setShowConfig(!showConfig)}>
-            <MaterialCommunityIcons name="cog-outline" size={16} color={colors.secondary} />
-            <Text style={styles.codeText}>API IP: {apiIp}</Text>
-            <MaterialCommunityIcons name="check-circle" size={16} color={colors.success} />
-          </Pressable>
+          <View style={styles.panel}>
+            <Text style={styles.sectionTitle}>{isLogin ? 'Đăng nhập' : 'Tạo tài khoản mới'}</Text>
+            {!isLogin && <Field icon="account" placeholder="Nguyễn Văn A" value={name} onChangeText={setName} />}
+            <Field icon="email-outline" placeholder="example@retail.com" keyboardType="email-address" value={email} onChangeText={setEmail} />
+            <Field icon="lock-outline" placeholder="Mật khẩu" secureTextEntry value={password} onChangeText={setPassword} />
+            <PrimaryButton label={isLogin ? 'Đăng nhập' : 'Đăng ký'} icon="arrow-right" onPress={handleSubmit} />
+          </View>
 
           <Pressable onPress={() => setMode(isLogin ? 'register' : 'login')}>
             <Text style={styles.linkText}>
@@ -473,10 +544,14 @@ function AuthScreen({ mode, setMode, apiIp, onIpChange, onDone }) {
   );
 }
 
-function HomeScreen({ userName, isAdmin, orders, onLogout, onScan, onContribute, onAdmin, onOrder }) {
+function HomeScreen({ userName, isAdmin, orders, onScan, onContribute, onAdmin, onOrder, onNavigate }) {
   return (
-    <AppScaffold active="scan" isAdmin={isAdmin}>
-      <Header title={`Xin chào, ${userName} (${isAdmin ? 'Admin' : 'User'})`} rightIcon="logout" onRight={onLogout} />
+    <AppScaffold active="home" isAdmin={isAdmin} onNavigate={onNavigate}>
+      <Header 
+        title={`Xin chào, ${userName}`} 
+        rightIcon="account-circle-outline" 
+        onRight={() => onNavigate('profile')} 
+      />
       <ScrollView contentContainerStyle={styles.contentWithNav} showsVerticalScrollIndicator={false}>
         <View style={styles.actionGrid}>
           <ActionTile
@@ -520,7 +595,7 @@ function HomeScreen({ userName, isAdmin, orders, onLogout, onScan, onContribute,
   );
 }
 
-function ScannerScreen({ cart, cartCount, cartTotal, onBack, onManual, onMultiMatch, onQuantity, onCheckout, onScan }) {
+function ScannerScreen({ cart, cartCount, cartTotal, onBack, onManual, onMultiMatch, onQuantity, onCheckout, onScan, onProductDetail }) {
   const [hasPermission, setHasPermission] = useState(false);
   const [torch, setTorch] = useState('off');
   const [lastScanned, setLastScanned] = useState(0);
@@ -601,7 +676,7 @@ function ScannerScreen({ cart, cartCount, cartTotal, onBack, onManual, onMultiMa
             <Text style={[styles.bodyMuted, { textAlign: 'center', marginVertical: spacing.md }]}>Giỏ hàng trống</Text>
           ) : (
             cart.map((item) => (
-              <CartItem key={item._id || item.id} item={item} onQuantity={onQuantity} />
+              <CartItem key={item._id || item.id} item={item} onQuantity={onQuantity} onPress={() => onProductDetail && onProductDetail(item)} />
             ))
           )}
         </ScrollView>
@@ -633,7 +708,7 @@ function ContributionScreen({ onBack, onSave, isAdmin }) {
   };
 
   return (
-    <AppScaffold active="inventory" isAdmin={isAdmin}>
+    <SafeAreaView style={styles.screen}>
       <Header title="Đóng góp sản phẩm" leftIcon="arrow-left" onLeft={onBack} />
       <ScrollView contentContainerStyle={styles.contentWithNav} showsVerticalScrollIndicator={false}>
         <View style={styles.panel}>
@@ -648,11 +723,11 @@ function ContributionScreen({ onBack, onSave, isAdmin }) {
           <PrimaryButton label="Gửi đóng góp" icon="cloud-upload-outline" onPress={handleSave} />
         </View>
       </ScrollView>
-    </AppScaffold>
+    </SafeAreaView>
   );
 }
 
-function OrderDetailScreen({ order, onBack }) {
+function OrderDetailScreen({ order, onBack, onProductDetail }) {
   if (!order) return null;
   return (
     <SafeAreaView style={styles.screen}>
@@ -673,7 +748,7 @@ function OrderDetailScreen({ order, onBack }) {
 
         <SectionHeader title="Danh sách sản phẩm" badge={`${order.items.length} mặt hàng`} />
         {order.items.map((item, idx) => (
-          <OrderLine key={idx} item={item} />
+          <OrderLine key={idx} item={item} onPress={onProductDetail} />
         ))}
 
         <View style={styles.totalPanel}>
@@ -685,84 +760,762 @@ function OrderDetailScreen({ order, onBack }) {
   );
 }
 
-function AdminScreen({ onBack, token }) {
+function AdminScreen({ onBack, token, onProductDetail }) {
+  const [activeTab, setActiveTab] = useState('sync'); // 'sync' | 'config' | 'products'
+  
+  // Tab 1: Sync & Logs
   const [syncing, setSyncing] = useState(false);
   const [logs, setLogs] = useState(syncLogs);
   const [market, setMarket] = useState('GO!');
 
+  const sourceMap = {
+    'GO!': 'go',
+    'BHX': 'bhx',
+    'WinMart': 'winmart',
+    'Tất cả': 'all'
+  };
+
+  const pollIntervalRef = useRef(null);
+
+  const startPolling = useCallback(() => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const res = await api.getSyncStatus(token);
+        if (res.success && res.data) {
+          const session = res.data;
+          
+          if (session.status === 'running') {
+            setSyncing(true);
+            if (session.logs && session.logs.length > 0) {
+              const reversedLogs = [...session.logs].reverse();
+              setLogs(reversedLogs);
+            }
+          } else if (session.status === 'success' || session.status === 'failed') {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+            setSyncing(false);
+            if (session.logs && session.logs.length > 0) {
+              const reversedLogs = [...session.logs].reverse();
+              setLogs(reversedLogs);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Lỗi thăm dò trạng thái đồng bộ:', err);
+      }
+    }, 1500); // Thăm dò mỗi 1.5 giây
+  }, [token]);
+
+  useEffect(() => {
+    // Kiểm tra trạng thái cào chạy nền khi mới vào màn hình Admin
+    const checkInitialStatus = async () => {
+      try {
+        const res = await api.getSyncStatus(token);
+        if (res.success && res.data && res.data.status === 'running') {
+          setSyncing(true);
+          startPolling();
+        }
+      } catch (err) {
+        console.warn('Lỗi kiểm tra trạng thái đồng bộ ban đầu:', err);
+      }
+    };
+    checkInitialStatus();
+
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, [token, startPolling]);
+
   const handleSync = async () => {
     setSyncing(true);
-    setLogs(prev => [`[${new Date().toLocaleTimeString()}] Bắt đầu đồng bộ từ ${market}...`, ...prev]);
+    const source = sourceMap[market] || 'all';
+    setLogs([`[${new Date().toLocaleTimeString()}] Đang yêu cầu máy chủ khởi chạy tiến trình đồng bộ ${market}...`]);
     try {
-      const res = await api.syncProducts(token);
-      setLogs(prev => [
-        `[${new Date().toLocaleTimeString()}] Đồng bộ thành công: ${res.message || 'Cập nhật kho hàng'}`,
-        ...prev
-      ]);
+      await api.syncProducts(source, token);
+      // Khởi chạy vòng thăm dò log thời gian thực
+      startPolling();
     } catch (err) {
       setLogs(prev => [
-        `[${new Date().toLocaleTimeString()}] Lỗi đồng bộ: ${err.message}`,
+        `[${new Date().toLocaleTimeString()}] Lỗi khởi chạy: ${err.message}`,
         ...prev
       ]);
-    } finally {
       setSyncing(false);
     }
   };
 
+  // Tab 2: Config
+  const [configsList, setConfigsList] = useState([]);
+  const [configMarket, setConfigMarket] = useState('GO!'); // 'GO!' | 'BHX' | 'WinMart'
+  const [cookie, setCookie] = useState('');
+  const [rawLogText, setRawLogText] = useState('');
+  const [tokenInput, setTokenInput] = useState('');
+  const [sign, setSign] = useState('');
+  const [xCsrfToken, setXCsrfToken] = useState('');
+  const [xSignature, setXSignature] = useState('');
+  const [apiclientid, setApiclientid] = useState('');
+  const [storeId, setStoreId] = useState('');
+  const [supermarketName, setSupermarketName] = useState('');
+  
+  // BHX fields
+  const [authorization, setAuthorization] = useState('');
+  const [deviceid, setDeviceid] = useState('');
+  const [xapikey, setXapikey] = useState('');
+  const [provinceId, setProvinceId] = useState('');
+
+  // WinMart fields
+  const [storeCode, setStoreCode] = useState('');
+  const [storeGroupCode, setStoreGroupCode] = useState('');
+
+  const [hasConfig, setHasConfig] = useState(false);
+  const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
+  const [autoRefreshing, setAutoRefreshing] = useState(false);
+
+  const handleAutoRefreshConfig = async (market) => {
+    setAutoRefreshing(true);
+    try {
+      let res;
+      if (market === 'GO!') {
+        res = await api.autoRefreshGoConfig(token);
+      } else if (market === 'BHX') {
+        res = await api.autoRefreshBhxConfig(token);
+      } else if (market === 'WinMart') {
+        res = await api.autoRefreshWinmartConfig(token);
+      }
+
+      if (res && res.success) {
+        alert(`Tự động cập nhật Cookie & Cấu hình ${market} thành công!`);
+        // Reload configs
+        const confRes = await api.getScraperConfig(token);
+        if (confRes.success && confRes.configs) {
+          setConfigsList(confRes.configs);
+          loadConfigForMarket(configMarket, confRes.configs);
+        }
+      } else {
+        alert('Lỗi: ' + (res?.message || 'Không thể lấy cấu hình tự động.'));
+      }
+    } catch (err) {
+      alert('Lỗi: ' + err.message);
+    } finally {
+      setAutoRefreshing(false);
+    }
+  };
+
+  const loadConfigForMarket = (marketName, list = configsList) => {
+    const dbName = marketName === 'GO!' ? 'sieuthi-go' : marketName === 'BHX' ? 'sieuthi-bhx' : 'sieuthi-winmart';
+    const cfg = list.find(c => c.name === dbName);
+    
+    setCookie(cfg?.hasCookie ? 'COOKIE_ALREADY_SAVED' : '');
+    setRawLogText('');
+    setStoreId(cfg?.storeId ? String(cfg.storeId) : '');
+    setSupermarketName(cfg?.supermarketName || '');
+    
+    // GO! fields
+    setApiclientid(cfg?.headers?.apiclientid || '');
+    setTokenInput(cfg?.headers?.token || '');
+    setSign(cfg?.headers?.sign || '');
+    setXCsrfToken(cfg?.headers?.xCsrfToken || '');
+    setXSignature(cfg?.headers?.xSignature || '');
+    
+    // BHX fields
+    setAuthorization(cfg?.headers?.authorization || '');
+    setDeviceid(cfg?.headers?.deviceid || '');
+    setXapikey(cfg?.headers?.xapikey || '');
+    setProvinceId(cfg?.provinceId ? String(cfg.provinceId) : '');
+    
+    // WinMart fields
+    setStoreCode(cfg?.storeCode || '');
+    setStoreGroupCode(cfg?.storeGroupCode || '');
+    
+    setHasConfig(!!cfg?.hasCookie);
+  };
+
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const res = await api.getScraperConfig(token);
+        if (res.success && res.configs) {
+          setConfigsList(res.configs);
+          loadConfigForMarket(configMarket, res.configs);
+        }
+      } catch (err) {
+        console.warn('Failed to load scraper configs:', err.message);
+      }
+    };
+    if (token && activeTab === 'config') {
+      fetchConfig();
+    }
+  }, [token, activeTab, configMarket]);
+
+  const handleSaveConfig = async () => {
+    try {
+      const dbName = configMarket === 'GO!' ? 'sieuthi-go' : configMarket === 'BHX' ? 'sieuthi-bhx' : 'sieuthi-winmart';
+      const payload = { name: dbName };
+      
+      if (rawLogText) {
+        payload.rawLogText = rawLogText;
+      }
+      if (cookie && cookie !== 'COOKIE_ALREADY_SAVED') {
+        payload.cookie = cookie;
+      }
+      if (storeId) payload.storeId = storeId;
+      if (supermarketName) payload.supermarketName = supermarketName;
+
+      if (configMarket === 'GO!') {
+        if (tokenInput && !tokenInput.startsWith('***')) payload.token = tokenInput;
+        if (sign && !sign.startsWith('***')) payload.sign = sign;
+        if (xCsrfToken && !xCsrfToken.startsWith('***')) payload.xCsrfToken = xCsrfToken;
+        if (xSignature && !xSignature.startsWith('***')) payload.xSignature = xSignature;
+        if (apiclientid) payload.apiclientid = apiclientid;
+      } else if (configMarket === 'BHX') {
+        if (authorization && !authorization.startsWith('***')) payload.authorization = authorization;
+        if (deviceid && !deviceid.startsWith('***')) payload.deviceid = deviceid;
+        if (xapikey && !xapikey.startsWith('***')) payload.xapikey = xapikey;
+        if (provinceId) payload.provinceId = provinceId;
+      } else if (configMarket === 'WinMart') {
+        if (storeCode) payload.storeCode = storeCode;
+        if (storeGroupCode) payload.storeGroupCode = storeGroupCode;
+      }
+
+      await api.updateScraperConfig(payload, token);
+      alert(`Cập nhật cấu hình ${configMarket} thành công!`);
+      
+      // Reload configs after saving
+      const res = await api.getScraperConfig(token);
+      if (res.success && res.configs) {
+        setConfigsList(res.configs);
+        loadConfigForMarket(configMarket, res.configs);
+      }
+    } catch (err) {
+      alert('Lỗi: ' + err.message);
+    }
+  };
+
+  // Tab 3: Products explorer
+  const [productsList, setProductsList] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editPrice, setEditPrice] = useState('');
+  const [editSupermarket, setEditSupermarket] = useState('');
+  const [deletingProduct, setDeletingProduct] = useState(null);
+
+  const loadProducts = async (searchVal = searchQuery) => {
+    setLoadingProducts(true);
+    try {
+      const data = await api.getAllProducts(searchVal);
+      setProductsList(data);
+    } catch (err) {
+      console.warn('Failed to load products list:', err.message);
+    } finally {
+      setLoadingProducts(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'products') {
+      if (!searchQuery) {
+        loadProducts('');
+      } else {
+        const delayDebounceFn = setTimeout(() => {
+          loadProducts(searchQuery);
+        }, 400);
+        return () => clearTimeout(delayDebounceFn);
+      }
+    }
+  }, [searchQuery, activeTab]);
+
+  const filteredProducts = Array.isArray(productsList) ? productsList : [];
+
+  const handleUpdateProduct = async () => {
+    if (!editName || !editPrice || !editSupermarket) {
+      alert('Vui lòng điền đủ thông tin');
+      return;
+    }
+    try {
+      await api.updateProduct(editingProduct._id || editingProduct.id, {
+        name: editName,
+        price: Number(editPrice),
+        supermarket: editSupermarket
+      }, token);
+      alert('Cập nhật sản phẩm thành công!');
+      setEditingProduct(null);
+      loadProducts();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const handleDeleteProduct = async () => {
+    try {
+      await api.deleteProduct(deletingProduct._id || deletingProduct.id, token);
+      alert('Đã xóa sản phẩm!');
+      setDeletingProduct(null);
+      loadProducts();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
   return (
-    <AppScaffold active="inventory" isAdmin={true}>
+    <SafeAreaView style={styles.screen}>
       <Header title="Hệ thống quản trị" leftIcon="arrow-left" onLeft={onBack} />
+      
+      {/* Dynamic Navigation Tabs */}
+      <View style={styles.adminTabs}>
+        <Pressable 
+          style={[styles.adminTabBtn, activeTab === 'sync' && styles.adminTabBtnActive]} 
+          onPress={() => setActiveTab('sync')}
+        >
+          <MaterialCommunityIcons name="sync" size={18} color={activeTab === 'sync' ? '#ffffff' : colors.secondary} />
+          <Text style={[styles.adminTabTxt, activeTab === 'sync' && styles.adminTabTxtActive]}>Đồng bộ</Text>
+        </Pressable>
+        <Pressable 
+          style={[styles.adminTabBtn, activeTab === 'config' && styles.adminTabBtnActive]} 
+          onPress={() => setActiveTab('config')}
+        >
+          <MaterialCommunityIcons name="cog-outline" size={18} color={activeTab === 'config' ? '#ffffff' : colors.secondary} />
+          <Text style={[styles.adminTabTxt, activeTab === 'config' && styles.adminTabTxtActive]}>Cấu hình</Text>
+        </Pressable>
+        <Pressable 
+          style={[styles.adminTabBtn, activeTab === 'products' && styles.adminTabBtnActive]} 
+          onPress={() => setActiveTab('products')}
+        >
+          <MaterialCommunityIcons name="database-outline" size={18} color={activeTab === 'products' ? '#ffffff' : colors.secondary} />
+          <Text style={[styles.adminTabTxt, activeTab === 'products' && styles.adminTabTxtActive]}>Sản phẩm</Text>
+        </Pressable>
+      </View>
+
       <ScrollView contentContainerStyle={styles.contentWithNav} showsVerticalScrollIndicator={false}>
-        <View style={styles.panel}>
-          <View style={styles.rowCenter}>
-            <MaterialCommunityIcons name="sync" size={22} color={colors.primary} />
-            <Text style={styles.sectionTitle}>Đồng bộ dữ liệu</Text>
-          </View>
-          <Segmented options={['GO!', 'BHX', 'WinMart', 'Tất cả']} value={market} onChange={setMarket} />
-          <PrimaryButton 
-            label={syncing ? "Đang đồng bộ..." : "Đồng bộ sản phẩm"} 
-            icon="cloud-download-outline" 
-            onPress={handleSync} 
-          />
-        </View>
+        {activeTab === 'sync' && (
+          <>
+            <View style={styles.panel}>
+              <View style={styles.rowCenter}>
+                <MaterialCommunityIcons name="sync" size={22} color={colors.primary} />
+                <Text style={styles.sectionTitle}>Đồng bộ dữ liệu</Text>
+              </View>
+              <Text style={styles.bodyMuted}>Đồng bộ và cào dữ liệu sản phẩm từ siêu thị GO!, Bách Hóa Xanh và WinMart.</Text>
+              <Segmented options={['GO!', 'BHX', 'WinMart', 'Tất cả']} value={market} onChange={setMarket} />
+              <PrimaryButton 
+                label={syncing ? "Đang đồng bộ..." : "Đồng bộ sản phẩm"} 
+                icon="cloud-download-outline" 
+                onPress={handleSync} 
+                disabled={syncing}
+              />
+            </View>
 
-        <View style={styles.statGrid}>
-          <Stat label="Tổng cộng" value="1.284" color={colors.primary} />
-          <Stat label="Đã tạo" value="1.042" color={colors.success} />
-          <Stat label="Bỏ qua" value="231" color={colors.secondary} />
-          <Stat label="Thất bại" value="11" color={colors.error} />
-        </View>
+            <View style={styles.statGrid}>
+              <Stat label="Nguồn cào" value="3" color={colors.primary} />
+              <Stat label="Đang hoạt động" value="Đồng bộ" color={colors.success} />
+              <Stat label="Cookie Scraper" value={hasConfig ? "Đã nạp" : "Trống"} color={hasConfig ? colors.success : colors.error} />
+              <Stat label="Lịch sử nhật ký" value={String(logs.length)} color={colors.secondary} />
+            </View>
 
-        <View style={styles.panel}>
-          <Text style={styles.kicker}>Cấu hình scraper</Text>
-          <Meta label="Trạng thái cookie" value="sess_************k9a2" />
-          <Meta label="Lần cuối đồng bộ" value="Hôm nay, 14:25:01" />
-        </View>
+            <View style={styles.console}>
+              <View style={styles.sheetHeader}>
+                <Text style={styles.kicker}>Nhật ký hệ thống</Text>
+                <Pressable onPress={() => setLogs([])}>
+                  <Text style={styles.codeTextLink}>CLEAR</Text>
+                </Pressable>
+              </View>
+              <ScrollView style={{ maxHeight: 250 }} showsVerticalScrollIndicator={true}>
+                {logs.map((line, idx) => (
+                  <Text
+                    key={idx}
+                    style={[
+                      styles.consoleLine,
+                      line.includes('Lỗi') && { color: colors.error },
+                      line.includes('thành công') && { color: colors.success },
+                      line.includes('Bắt đầu') && { color: colors.primary },
+                    ]}
+                  >
+                    {line}
+                  </Text>
+                ))}
+              </ScrollView>
+            </View>
+          </>
+        )}
 
-        <View style={styles.console}>
-          <View style={styles.sheetHeader}>
-            <Text style={styles.kicker}>Nhật ký hệ thống</Text>
-            <Pressable onPress={() => setLogs([])}>
-              <Text style={styles.codeTextLink}>CLEAR</Text>
-            </Pressable>
-          </View>
-          <ScrollView style={{ maxHeight: 150 }} showsVerticalScrollIndicator={true}>
-            {logs.map((line, idx) => (
-              <Text
-                key={idx}
-                style={[
-                  styles.consoleLine,
-                  line.includes('Lỗi') && { color: colors.error },
-                  line.includes('Bắt đầu') && { color: colors.success },
-                ]}
+        {activeTab === 'config' && (
+          <View style={styles.panel}>
+            <Text style={styles.sectionTitle}>Cấu hình Scraper {configMarket}</Text>
+            <Text style={styles.bodyMuted}>Cập nhật Cookie và các tham số bảo mật của hệ thống cào dữ liệu.</Text>
+            
+            <View style={{ gap: spacing.sm, marginTop: spacing.sm }}>
+              <Segmented 
+                options={['GO!', 'BHX', 'WinMart']} 
+                value={configMarket} 
+                onChange={(val) => {
+                  setConfigMarket(val);
+                  loadConfigForMarket(val);
+                }} 
+              />
+
+              {configMarket === 'GO!' && (
+                <View style={{ marginTop: spacing.xs, marginBottom: spacing.xs }}>
+                  <PrimaryButton 
+                    label={autoRefreshing ? "Đang lấy Token tự động..." : "Tự động lấy Cookie & Token GO! qua Chrome"} 
+                    icon="chrome" 
+                    onPress={() => handleAutoRefreshConfig('GO!')} 
+                    disabled={autoRefreshing}
+                  />
+                  <Text style={[styles.bodyMuted, { fontSize: 12, marginTop: 4 }]}>
+                    * Nhấn nút này để khởi chạy trình duyệt Chrome tự động thu thập Cookie/Tokens mới từ GO!.
+                  </Text>
+                </View>
+              )}
+
+              {configMarket === 'BHX' && (
+                <View style={{ marginTop: spacing.xs, marginBottom: spacing.xs }}>
+                  <PrimaryButton 
+                    label={autoRefreshing ? "Đang lấy cấu hình tự động..." : "Tự động lấy Cookie & Token BHX qua Chrome"} 
+                    icon="chrome" 
+                    onPress={() => handleAutoRefreshConfig('BHX')} 
+                    disabled={autoRefreshing}
+                  />
+                  <Text style={[styles.bodyMuted, { fontSize: 12, marginTop: 4 }]}>
+                    * Nhấn nút này để khởi chạy trình duyệt Chrome tự động thu thập Cookie, Tokens & Store ID mới từ Bách Hóa Xanh.
+                  </Text>
+                </View>
+              )}
+
+              {configMarket === 'WinMart' && (
+                <View style={{ marginTop: spacing.xs, marginBottom: spacing.xs }}>
+                  <PrimaryButton 
+                    label={autoRefreshing ? "Đang lấy cấu hình tự động..." : "Tự động lấy Cookie & Cấu hình WinMart qua Chrome"} 
+                    icon="chrome" 
+                    onPress={() => handleAutoRefreshConfig('WinMart')} 
+                    disabled={autoRefreshing}
+                  />
+                  <Text style={[styles.bodyMuted, { fontSize: 12, marginTop: 4 }]}>
+                    * Nhấn nút này để khởi chạy trình duyệt Chrome tự động thu thập Cookie & Store Code mới từ WinMart.
+                  </Text>
+                </View>
+              )}
+
+              <Text style={styles.bodyStrong}>Dán cURL / Headers từ DevTools (Tự động tách Cookie & Tokens)</Text>
+              <Field 
+                icon="text-box-search-outline" 
+                placeholder="Dán toàn bộ Request Headers hoặc lệnh cURL vào đây..." 
+                value={rawLogText} 
+                onChangeText={setRawLogText}
+                multiline={true}
+                numberOfLines={3}
+                style={{ minHeight: 80, textAlignVertical: 'top', paddingTop: spacing.xs }}
+                containerStyle={{ alignItems: 'flex-start', paddingTop: spacing.xs }}
+              />
+
+              <Text style={styles.bodyStrong}>Cookie thủ công</Text>
+              <Field 
+                icon="cookie" 
+                placeholder={cookie === 'COOKIE_ALREADY_SAVED' ? "Cookie đã được lưu (nhập cookie mới để cập nhật)..." : "Nhập cookie đầy đủ từ DevTools..."} 
+                value={cookie === 'COOKIE_ALREADY_SAVED' ? '' : cookie} 
+                onChangeText={setCookie} 
+              />
+
+              {/* Advanced Configuration Accordion Trigger */}
+              <Pressable 
+                style={({ pressed }) => [
+                  styles.settingsRow, 
+                  { paddingVertical: spacing.sm, marginTop: spacing.xs, borderTopWidth: 1, borderTopColor: colors.glassBorder },
+                  pressed && styles.pressed
+                ]} 
+                onPress={() => setShowAdvancedConfig(!showAdvancedConfig)}
               >
-                {line}
-              </Text>
-            ))}
-          </ScrollView>
-        </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
+                  <MaterialCommunityIcons 
+                    name={showAdvancedConfig ? "chevron-down" : "chevron-right"} 
+                    size={20} 
+                    color={colors.primary} 
+                  />
+                  <Text style={styles.bodyStrong}>Cấu hình nâng cao ({configMarket})</Text>
+                </View>
+              </Pressable>
+
+              {showAdvancedConfig && (
+                <View style={{ gap: spacing.sm, paddingLeft: spacing.sm }}>
+                  {configMarket === 'GO!' && (
+                    <>
+                      <Text style={styles.bodyStrong}>Store ID & Supermarket</Text>
+                      <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+                        <View style={{ flex: 1 }}>
+                          <Field 
+                            icon="storefront-outline" 
+                            placeholder="Store ID (e.g. 123)" 
+                            value={storeId} 
+                            onChangeText={setStoreId} 
+                          />
+                        </View>
+                        <View style={{ flex: 1.5 }}>
+                          <Field 
+                            icon="tag-outline" 
+                            placeholder="Supermarket Name" 
+                            value={supermarketName} 
+                            onChangeText={setSupermarketName} 
+                          />
+                        </View>
+                      </View>
+
+                      <Text style={styles.bodyStrong}>Headers & Security tokens</Text>
+                      <Field 
+                        icon="lock-outline" 
+                        placeholder="Header: token" 
+                        value={tokenInput} 
+                        onChangeText={setTokenInput} 
+                      />
+                      <Field 
+                        icon="shield-key-outline" 
+                        placeholder="Header: sign" 
+                        value={sign} 
+                        onChangeText={setSign} 
+                      />
+                      <Field 
+                        icon="api" 
+                        placeholder="Header: apiclientid" 
+                        value={apiclientid} 
+                        onChangeText={setApiclientid} 
+                      />
+                      <Field 
+                        icon="form-textbox-password" 
+                        placeholder="Header: x-csrf-token" 
+                        value={xCsrfToken} 
+                        onChangeText={setXCsrfToken} 
+                      />
+                      <Field 
+                        icon="signature" 
+                        placeholder="Header: x-signature" 
+                        value={xSignature} 
+                        onChangeText={setXSignature} 
+                      />
+                    </>
+                  )}
+
+                  {configMarket === 'BHX' && (
+                    <>
+                      <Text style={styles.bodyStrong}>Store ID & Province ID & Supermarket</Text>
+                      <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+                        <View style={{ flex: 1 }}>
+                          <Field 
+                            icon="storefront-outline" 
+                            placeholder="Store ID (e.g. 2546)" 
+                            value={storeId} 
+                            onChangeText={setStoreId} 
+                          />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Field 
+                            icon="map-marker-outline" 
+                            placeholder="Province ID (e.g. 1027)" 
+                            value={provinceId} 
+                            onChangeText={setProvinceId} 
+                          />
+                        </View>
+                      </View>
+                      <Field 
+                        icon="tag-outline" 
+                        placeholder="Supermarket Name" 
+                        value={supermarketName} 
+                        onChangeText={setSupermarketName} 
+                      />
+
+                      <Text style={styles.bodyStrong}>Headers & Credentials</Text>
+                      <Field 
+                        icon="lock-outline" 
+                        placeholder="Header: authorization" 
+                        value={authorization} 
+                        onChangeText={setAuthorization} 
+                      />
+                      <Field 
+                        icon="cellphone" 
+                        placeholder="Header: deviceid" 
+                        value={deviceid} 
+                        onChangeText={setDeviceid} 
+                      />
+                      <Field 
+                        icon="api" 
+                        placeholder="Header: xapikey" 
+                        value={xapikey} 
+                        onChangeText={setXapikey} 
+                      />
+                    </>
+                  )}
+
+                  {configMarket === 'WinMart' && (
+                    <>
+                      <Text style={styles.bodyStrong}>Store Code & Store Group Code & Supermarket</Text>
+                      <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+                        <View style={{ flex: 1 }}>
+                          <Field 
+                            icon="storefront-outline" 
+                            placeholder="Store Code (e.g. 1535)" 
+                            value={storeCode} 
+                            onChangeText={setStoreCode} 
+                          />
+                        </View>
+                        <View style={{ flex: 1.5 }}>
+                          <Field 
+                            icon="group" 
+                            placeholder="Store Group Code (e.g. 1998)" 
+                            value={storeGroupCode} 
+                            onChangeText={setStoreGroupCode} 
+                          />
+                        </View>
+                      </View>
+                      <Field 
+                        icon="tag-outline" 
+                        placeholder="Supermarket Name" 
+                        value={supermarketName} 
+                        onChangeText={setSupermarketName} 
+                      />
+                    </>
+                  )}
+                </View>
+              )}
+
+              <PrimaryButton 
+                label={`Lưu cấu hình ${configMarket}`} 
+                icon="check" 
+                onPress={handleSaveConfig} 
+              />
+            </View>
+          </View>
+        )}
+
+        {activeTab === 'products' && (
+          <>
+            <View style={styles.panel}>
+              <Text style={styles.sectionTitle}>Cơ sở dữ liệu sản phẩm</Text>
+              <Text style={styles.bodyMuted}>Tìm kiếm, chỉnh sửa thông tin hoặc xóa sản phẩm khỏi cơ sở dữ liệu.</Text>
+              <Field 
+                icon="magnify" 
+                placeholder="Tìm kiếm sản phẩm (tên, mã vạch, siêu thị)..." 
+                value={searchQuery} 
+                onChangeText={setSearchQuery} 
+              />
+            </View>
+
+            {loadingProducts ? (
+              <SafeActivityIndicator size="large" color={colors.primary} style={{ marginVertical: spacing.xl }} />
+            ) : filteredProducts.length === 0 ? (
+              <Text style={[styles.bodyMuted, { textAlign: 'center', marginVertical: spacing.xl }]}>Không tìm thấy sản phẩm nào.</Text>
+            ) : (
+              filteredProducts.map((p) => (
+                <View key={p._id || p.id} style={styles.adminProductCard}>
+                  <Pressable 
+                    style={({ pressed }) => [styles.adminProductInfo, pressed && styles.pressed]} 
+                    onPress={() => onProductDetail && onProductDetail(p)}
+                  >
+                    <Text style={styles.bodyStrong} numberOfLines={1}>{p.name}</Text>
+                    <Text style={styles.codeText}>{p.barcode} · <Text style={{ color: colors.primary, fontWeight: '500' }}>{p.supermarket}</Text></Text>
+                    <Text style={styles.priceText}>{money(p.price)}</Text>
+                  </Pressable>
+                  <View style={styles.adminProductActions}>
+                    <Pressable 
+                      style={({ pressed }) => [styles.actionBtn, pressed && styles.pressed]} 
+                      onPress={() => {
+                        setEditingProduct(p);
+                        setEditName(p.name);
+                        setEditPrice(String(p.price));
+                        setEditSupermarket(p.supermarket);
+                      }}
+                    >
+                      <MaterialCommunityIcons name="pencil" size={16} color={colors.primary} />
+                    </Pressable>
+                    <Pressable 
+                      style={({ pressed }) => [styles.actionBtn, pressed && styles.pressed]} 
+                      onPress={() => setDeletingProduct(p)}
+                    >
+                      <MaterialCommunityIcons name="trash-can-outline" size={16} color={colors.error} />
+                    </Pressable>
+                  </View>
+                </View>
+              ))
+            )}
+          </>
+        )}
       </ScrollView>
-    </AppScaffold>
+
+      {/* Edit Product Modal */}
+      <Modal visible={!!editingProduct} transparent animationType="fade" onRequestClose={() => setEditingProduct(null)}>
+        <View style={styles.modalCenterContainer}>
+          <View style={styles.confirmModalSheet}>
+            <Text style={styles.sectionTitle}>Sửa thông tin sản phẩm</Text>
+            <View style={{ gap: spacing.sm, marginVertical: spacing.sm }}>
+              <Text style={styles.kicker}>Tên sản phẩm</Text>
+              <Field icon="basket-outline" value={editName} onChangeText={setEditName} />
+              
+              <Text style={styles.kicker}>Giá sản phẩm</Text>
+              <Field icon="cash" value={editPrice} onChangeText={setEditPrice} keyboardType="number-pad" />
+              
+              <Text style={styles.kicker}>Siêu thị</Text>
+              <Segmented options={['Bách Hóa Xanh', 'WinMart', 'GO!', 'Khác']} value={editSupermarket} onChange={setEditSupermarket} />
+            </View>
+            <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+              <Pressable 
+                style={({ pressed }) => [styles.secondaryButton, { flex: 1, marginTop: 0 }, pressed && styles.pressed]} 
+                onPress={() => setEditingProduct(null)}
+              >
+                <Text style={styles.secondaryButtonText}>Hủy</Text>
+              </Pressable>
+              <Pressable 
+                style={({ pressed }) => [styles.primaryButton, { flex: 1, marginTop: 0 }, pressed && styles.pressed]} 
+                onPress={handleUpdateProduct}
+              >
+                <Text style={styles.primaryButtonText}>Lưu lại</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete Product Confirmation Modal */}
+      <Modal visible={!!deletingProduct} transparent animationType="fade" onRequestClose={() => setDeletingProduct(null)}>
+        <View style={styles.modalCenterContainer}>
+          <View style={styles.confirmModalSheet}>
+            <View style={{ alignItems: 'center', gap: spacing.sm, marginBottom: spacing.xs }}>
+              <View style={{
+                width: 56,
+                height: 56,
+                borderRadius: 28,
+                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <MaterialCommunityIcons name="trash-can-outline" size={28} color="#EF4444" />
+              </View>
+              <Text style={[styles.sectionTitle, { textAlign: 'center' }]}>Xóa sản phẩm?</Text>
+              <Text style={[styles.bodyMuted, { textAlign: 'center' }]}>
+                Bạn có chắc chắn muốn xóa sản phẩm "{deletingProduct?.name}" khỏi cơ sở dữ liệu?
+              </Text>
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+              <Pressable 
+                style={({ pressed }) => [styles.secondaryButton, { flex: 1, marginTop: 0 }, pressed && styles.pressed]} 
+                onPress={() => setDeletingProduct(null)}
+              >
+                <Text style={styles.secondaryButtonText}>Hủy</Text>
+              </Pressable>
+              <Pressable 
+                style={({ pressed }) => [
+                  styles.primaryButton, 
+                  { flex: 1, marginTop: 0, backgroundColor: '#EF4444', borderColor: 'rgba(255, 255, 255, 0.1)' }, 
+                  pressed && styles.pressed
+                ]} 
+                onPress={handleDeleteProduct}
+              >
+                <Text style={styles.primaryButtonText}>Xóa vĩnh viễn</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
@@ -777,7 +1530,7 @@ function ProductPickerModal({ visible, barcode, products, onClose, onPick }) {
           <ScrollView style={{ maxHeight: 220, marginVertical: spacing.sm }}>
             {products.map((product) => (
               <Pressable key={product._id || product.id} style={({ pressed }) => [styles.choiceCard, pressed && styles.pressed]} onPress={() => onPick(product)}>
-                <ProductMark />
+                <ProductMark imageUrl={product.imageUrl} />
                 <View style={styles.flex}>
                   <Text style={styles.bodyStrong}>{product.name}</Text>
                   <Text style={styles.codeText}>{product.supermarket}</Text>
@@ -787,6 +1540,94 @@ function ProductPickerModal({ visible, barcode, products, onClose, onPick }) {
             ))}
           </ScrollView>
           <PrimaryButton label="Đóng" icon="close" onPress={onClose} />
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function ProductDetailModal({ visible, product, onClose }) {
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [product]);
+
+  if (!product) return null;
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <View style={[styles.modalSheet, { padding: spacing.lg, maxHeight: '90%' }]}>
+          {/* Close button top-right */}
+          <Pressable style={styles.modalCloseBtn} onPress={onClose}>
+            <MaterialCommunityIcons name="close" size={24} color={colors.onSurface} />
+          </Pressable>
+
+          {/* Product Image Area */}
+          <View style={styles.detailImageContainer}>
+            {product.imageUrl && !hasError ? (
+              <Image
+                source={{ uri: product.imageUrl }}
+                style={styles.detailImage}
+                onError={() => setHasError(true)}
+                resizeMode="contain"
+              />
+            ) : (
+              <View style={styles.detailImageFallback}>
+                <MaterialCommunityIcons name="cube-outline" size={56} color={colors.primary} />
+                <Text style={styles.bodyMuted}>Không có ảnh sản phẩm</Text>
+              </View>
+            )}
+          </View>
+
+          {/* Supermarket Tag */}
+          <View style={styles.detailTagRow}>
+            <View style={[
+              styles.supermarketTag, 
+              product.supermarket === 'WinMart' && { backgroundColor: '#e51f2b20' },
+              product.supermarket === 'Bách Hóa Xanh' && { backgroundColor: '#008b4520' },
+              product.supermarket === 'GO!' && { backgroundColor: '#e3061320' },
+            ]}>
+              <Text style={[
+                styles.supermarketTagText,
+                product.supermarket === 'WinMart' && { color: '#e51f2b' },
+                product.supermarket === 'Bách Hóa Xanh' && { color: '#008b45' },
+                product.supermarket === 'GO!' && { color: '#e30613' },
+              ]}>
+                {product.supermarket || 'Khác'}
+              </Text>
+            </View>
+          </View>
+
+          {/* Product Info */}
+          <View style={{ gap: spacing.xs }}>
+            <Text style={[styles.sectionTitle, { fontSize: 18 }]} numberOfLines={2}>
+              {product.name}
+            </Text>
+
+            <Text style={styles.detailBarcode}>
+              Mã vạch: <Text style={{ color: colors.onSurface, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>{product.barcode}</Text>
+            </Text>
+
+            {product.category && (
+              <Text style={styles.detailBarcode}>
+                Danh mục: <Text style={{ color: colors.onSurface }}>{product.category}</Text>
+              </Text>
+            )}
+          </View>
+
+          {/* Divider */}
+          <View style={styles.detailDivider} />
+
+          {/* Price Section */}
+          <View style={styles.detailPriceRow}>
+            <Text style={styles.bodyMuted}>Giá niêm yết</Text>
+            <Text style={styles.detailPriceText}>{money(product.price)}</Text>
+          </View>
+
+          {/* Footer Action */}
+          <PrimaryButton label="Đóng" icon="check" onPress={onClose} style={{ marginTop: spacing.xs }} />
         </View>
       </View>
     </Modal>
@@ -839,16 +1680,191 @@ function ManualEntryModal({ visible, barcode, onClose, onSave }) {
   );
 }
 
-function AppScaffold({ children, active, isAdmin }) {
+function ProfileScreen({ user, onLogout, onNavigate, isDark, onToggleTheme }) {
+  const [logoutConfirmVisible, setLogoutConfirmVisible] = useState(false);
+
+  return (
+    <AppScaffold active="profile" isAdmin={user && user.role === 'admin'} onNavigate={onNavigate}>
+      <Header title="Trang cá nhân" />
+      <ScrollView contentContainerStyle={styles.contentWithNav} showsVerticalScrollIndicator={false}>
+        <View style={styles.profileCard}>
+          <View style={styles.avatarLarge}>
+            <Text style={styles.avatarText}>{user?.name ? user.name.slice(0, 1).toUpperCase() : 'U'}</Text>
+          </View>
+          <Text style={styles.profileName}>{user?.name || 'Tài khoản'}</Text>
+          <Text style={styles.profileEmail}>{user?.email || 'email@example.com'}</Text>
+          <View style={[
+            styles.roleBadge, 
+            user?.role === 'admin' ? styles.roleAdmin : styles.roleUser
+          ]}>
+            <Text style={styles.roleText}>{user?.role === 'admin' ? 'Admin' : 'User'}</Text>
+          </View>
+        </View>
+
+        <View style={styles.panel}>
+          <Text style={styles.kicker}>Cài đặt & Thông tin</Text>
+          
+          <Pressable style={styles.settingsRow}>
+            <View style={styles.rowCenter}>
+              <MaterialCommunityIcons name="shield-check-outline" size={20} color={colors.primary} />
+              <Text style={styles.bodyStrong}>Bảo mật tài khoản</Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={18} color={colors.secondary} />
+          </Pressable>
+
+          <View style={styles.divider} />
+
+          <View style={styles.settingsRow}>
+            <View style={styles.rowCenter}>
+              <MaterialCommunityIcons name="theme-light-dark" size={20} color={colors.primary} />
+              <Text style={styles.bodyStrong}>Giao diện tối (Dark Mode)</Text>
+            </View>
+            <Switch 
+              value={isDark} 
+              onValueChange={onToggleTheme}
+              trackColor={{ false: '#94A3B8', true: colors.primaryContainer }}
+              thumbColor={isDark ? colors.primary : '#F1F5F9'}
+            />
+          </View>
+
+          <View style={styles.divider} />
+
+          <Pressable style={styles.settingsRow}>
+            <View style={styles.rowCenter}>
+              <MaterialCommunityIcons name="translate" size={20} color={colors.primary} />
+              <Text style={styles.bodyStrong}>Ngôn ngữ</Text>
+            </View>
+            <Text style={styles.bodyMuted}>Tiếng Việt</Text>
+          </Pressable>
+
+          <View style={styles.divider} />
+
+          <Pressable style={styles.settingsRow}>
+            <View style={styles.rowCenter}>
+              <MaterialCommunityIcons name="information-outline" size={20} color={colors.primary} />
+              <Text style={styles.bodyStrong}>Phiên bản ứng dụng</Text>
+            </View>
+            <Text style={styles.bodyMuted}>v1.0.0</Text>
+          </Pressable>
+        </View>
+
+        <Pressable 
+          style={({ pressed }) => [styles.logoutButton, pressed && styles.pressed]} 
+          onPress={() => setLogoutConfirmVisible(true)}
+        >
+          <MaterialCommunityIcons name="logout" size={20} color="#EF4444" />
+          <Text style={styles.logoutButtonText}>Đăng xuất tài khoản</Text>
+        </Pressable>
+      </ScrollView>
+
+      <Modal visible={logoutConfirmVisible} transparent animationType="fade" onRequestClose={() => setLogoutConfirmVisible(false)}>
+        <View style={styles.modalCenterContainer}>
+          <View style={styles.confirmModalSheet}>
+            <View style={{ alignItems: 'center', gap: spacing.sm, marginBottom: spacing.xs }}>
+              <View style={{
+                width: 56,
+                height: 56,
+                borderRadius: 28,
+                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <MaterialCommunityIcons name="logout" size={28} color="#EF4444" />
+              </View>
+              <Text style={[styles.sectionTitle, { textAlign: 'center' }]}>Đăng xuất?</Text>
+              <Text style={[styles.bodyMuted, { textAlign: 'center' }]}>Bạn có chắc chắn muốn đăng xuất khỏi tài khoản này?</Text>
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+              <Pressable 
+                style={({ pressed }) => [
+                  styles.secondaryButton, 
+                  { flex: 1, marginTop: 0 }, 
+                  pressed && styles.pressed
+                ]} 
+                onPress={() => setLogoutConfirmVisible(false)}
+              >
+                <Text style={styles.secondaryButtonText}>Hủy</Text>
+              </Pressable>
+              
+              <Pressable 
+                style={({ pressed }) => [
+                  styles.primaryButton, 
+                  { flex: 1, marginTop: 0, backgroundColor: '#EF4444', borderColor: 'rgba(255, 255, 255, 0.1)' }, 
+                  pressed && styles.pressed
+                ]} 
+                onPress={() => {
+                  setLogoutConfirmVisible(false);
+                  onLogout();
+                }}
+              >
+                <Text style={styles.primaryButtonText}>Đăng xuất</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </AppScaffold>
+  );
+}
+
+function AppScaffold({ children, active, isAdmin, onNavigate }) {
   return (
     <SafeAreaView style={styles.screen}>
       {children}
-      <BottomNav active={active} isAdmin={isAdmin} />
+      <BottomNav active={active} isAdmin={isAdmin} onNavigate={onNavigate} />
     </SafeAreaView>
   );
 }
 
-// Custom components
+function BottomNav({ active, isAdmin, onNavigate }) {
+  return (
+    <View style={styles.bottomNav}>
+      <Pressable 
+        style={({ pressed }) => [
+          styles.navItem, 
+          active === 'home' && styles.navItemActive,
+          pressed && styles.pressed
+        ]} 
+        onPress={() => onNavigate('home')}
+      >
+        <MaterialCommunityIcons 
+          name={active === 'home' ? "home" : "home-outline"} 
+          size={22} 
+          color={active === 'home' ? (colors.background === '#090D16' ? '#ffffff' : colors.primary) : colors.secondary} 
+        />
+        <Text style={[styles.navText, active === 'home' && { color: colors.background === '#090D16' ? '#ffffff' : colors.primary, fontWeight: '600' }]}>Trang chủ</Text>
+      </Pressable>
+
+      <Pressable 
+        style={({ pressed }) => [
+          styles.centerScanButton,
+          pressed && styles.pressed
+        ]} 
+        onPress={() => onNavigate('scanner')}
+      >
+        <MaterialCommunityIcons name="barcode-scan" size={26} color="#ffffff" />
+      </Pressable>
+
+      <Pressable 
+        style={({ pressed }) => [
+          styles.navItem, 
+          active === 'profile' && styles.navItemActive,
+          pressed && styles.pressed
+        ]} 
+        onPress={() => onNavigate('profile')}
+      >
+        <MaterialCommunityIcons 
+          name={active === 'profile' ? "account" : "account-outline"} 
+          size={22} 
+          color={active === 'profile' ? (colors.background === '#090D16' ? '#ffffff' : colors.primary) : colors.secondary} 
+        />
+        <Text style={[styles.navText, active === 'profile' && { color: colors.background === '#090D16' ? '#ffffff' : colors.primary, fontWeight: '600' }]}>Cá nhân</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function Header({ title, leftIcon, rightIcon, onLeft, onRight }) {
   return (
     <View style={[styles.header, styles.headerShadow]}>
@@ -863,41 +1879,25 @@ function Header({ title, leftIcon, rightIcon, onLeft, onRight }) {
   );
 }
 
-function BottomNav({ active, isAdmin }) {
-  const items = [
-    ['scan', 'barcode-scan', 'Scan'],
-    ...(isAdmin ? [['inventory', 'archive-outline', 'Inventory']] : []),
-    ['cart', 'cart-outline', 'Cart'],
-    ['history', 'history', 'History'],
-  ];
-  return (
-    <View style={styles.bottomNav}>
-      {items.map(([key, icon, label]) => {
-        const selected = active === key;
-        return (
-          <View key={key} style={[styles.navItem, selected && styles.navItemActive]}>
-            <MaterialCommunityIcons name={icon} size={20} color={selected ? '#ffffff' : colors.secondary} />
-            <Text style={[styles.navText, selected && { color: '#ffffff' }]}>{label}</Text>
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
 function Field(props) {
-  const { icon, ...inputProps } = props;
+  const { icon, containerStyle, style, ...inputProps } = props;
   const [focused, setFocused] = useState(false);
   return (
     <View style={[
       styles.field, 
       styles.sunken, 
-      focused && { borderColor: colors.primary }
+      focused && { borderColor: colors.primary },
+      containerStyle
     ]}>
-      <MaterialCommunityIcons name={icon} size={20} color={focused ? colors.primary : colors.secondary} />
+      <MaterialCommunityIcons 
+        name={icon} 
+        size={20} 
+        color={focused ? colors.primary : colors.secondary} 
+        style={containerStyle?.alignItems === 'flex-start' && { marginTop: 12 }}
+      />
       <TextInput
-        placeholderTextColor="rgba(255, 255, 255, 0.3)"
-        style={styles.input}
+        placeholderTextColor={colors.placeholder}
+        style={[styles.input, style]}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         {...inputProps}
@@ -989,7 +1989,7 @@ function OrderCard({ order, onPress }) {
   );
 }
 
-function CartItem({ item, onQuantity }) {
+function CartItem({ item, onQuantity, onPress }) {
   const [localQty, setLocalQty] = useState(String(item.quantity));
 
   useEffect(() => {
@@ -1012,15 +2012,20 @@ function CartItem({ item, onQuantity }) {
 
   return (
     <View style={styles.cartItem}>
-      <ProductMark />
-      <View style={styles.flex}>
-        <Text style={styles.kicker}>SKU: {item.barcode.slice(-6)}</Text>
-        <Text style={styles.bodyStrong} numberOfLines={1}>{item.name}</Text>
-        <Text style={styles.priceText}>{money(item.price)}</Text>
-      </View>
+      <Pressable 
+        style={({ pressed }) => [styles.cartItemContent, pressed && styles.pressed]} 
+        onPress={onPress}
+      >
+        <ProductMark imageUrl={item.imageUrl} />
+        <View style={styles.flex}>
+          <Text style={styles.kicker}>SKU: {item.barcode ? item.barcode.slice(-6) : 'N/A'}</Text>
+          <Text style={styles.bodyStrong} numberOfLines={1}>{item.name}</Text>
+          <Text style={styles.priceText}>{money(item.price)}</Text>
+        </View>
+      </Pressable>
       <View style={styles.stepper}>
         <Pressable style={styles.stepperBtn} onPress={() => onQuantity(item._id || item.id, -1)}>
-          <MaterialCommunityIcons name="minus" size={14} color="#ffffff" />
+          <MaterialCommunityIcons name="minus" size={14} color={colors.onSurface} />
         </Pressable>
         <TextInput
           style={styles.stepperInput}
@@ -1030,23 +2035,28 @@ function CartItem({ item, onQuantity }) {
           onSubmitEditing={handleBlur}
           keyboardType="number-pad"
           selectTextOnFocus
-          placeholderTextColor="rgba(255, 255, 255, 0.3)"
+          placeholderTextColor={colors.placeholder}
         />
         <Pressable style={styles.stepperBtn} onPress={() => onQuantity(item._id || item.id, 1)}>
-          <MaterialCommunityIcons name="plus" size={14} color="#ffffff" />
+          <MaterialCommunityIcons name="plus" size={14} color={colors.onSurface} />
         </Pressable>
       </View>
     </View>
   );
 }
 
-function OrderLine({ item }) {
+function OrderLine({ item, onPress }) {
   const pName = item.product ? item.product.name : 'Sản phẩm';
   const pBarcode = item.product ? item.product.barcode : '';
   const pPrice = item.product ? item.product.price : 0;
+  const pImageUrl = item.product ? item.product.imageUrl : '';
   return (
-    <View style={styles.cartItem}>
-      <ProductMark />
+    <Pressable 
+      style={({ pressed }) => [styles.cartItem, pressed && item.product && styles.pressed]} 
+      onPress={() => item.product && onPress && onPress(item.product)}
+      disabled={!item.product}
+    >
+      <ProductMark imageUrl={pImageUrl} />
       <View style={styles.flex}>
         <Text style={styles.bodyStrong} numberOfLines={1}>{pName}</Text>
         <Text style={styles.codeText}>{pBarcode}</Text>
@@ -1055,14 +2065,29 @@ function OrderLine({ item }) {
         <Text style={styles.priceText}>{money(pPrice * item.quantity)}</Text>
         <Text style={styles.codeText}>x{item.quantity} @ {money(pPrice)}</Text>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
-function ProductMark() {
+function ProductMark({ imageUrl }) {
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [imageUrl]);
+
   return (
     <View style={styles.productMark}>
-      <MaterialCommunityIcons name="cube-outline" size={22} color={colors.primary} />
+      {imageUrl && !hasError ? (
+        <Image 
+          source={{ uri: imageUrl }} 
+          style={{ width: '100%', height: '100%', borderRadius: radius.base }}
+          onError={() => setHasError(true)}
+          resizeMode="cover"
+        />
+      ) : (
+        <MaterialCommunityIcons name="cube-outline" size={22} color={colors.primary} />
+      )}
     </View>
   );
 }
@@ -1113,7 +2138,7 @@ function Stat({ label, value, color }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   rootContainer: {
     flex: 1,
     backgroundColor: colors.background, // Deep Slate background
@@ -1182,7 +2207,7 @@ const styles = StyleSheet.create({
         borderRadius: 28,
         borderWidth: 1,
         borderColor: colors.glassBorder,
-        backgroundColor: 'rgba(17, 24, 39, 0.75)', // Elevated Slate transparent
+        backgroundColor: colors.glassPanelBg, // Dynamic Slate/White transparent
         backdropFilter: 'blur(20px) saturate(1.2)',
         boxShadow: '0 24px 64px -12px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
         transformStyle: 'preserve-3d',
@@ -1248,7 +2273,7 @@ const styles = StyleSheet.create({
   },
   appTitle: {
     ...type.headline,
-    color: '#ffffff',
+    color: colors.onSurface,
     textAlign: 'center',
   },
   kicker: {
@@ -1259,11 +2284,11 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     ...type.title,
-    color: '#ffffff',
+    color: colors.onSurface,
   },
   bodyStrong: {
     ...type.body,
-    color: '#ffffff',
+    color: colors.onSurface,
     fontWeight: '600',
   },
   bodyMuted: {
@@ -1290,8 +2315,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.base,
     padding: spacing.md,
     gap: spacing.md,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.glassBg,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
     ...Platform.select({
       web: {
@@ -1308,15 +2333,15 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   sunken: {
-    backgroundColor: 'rgba(19, 27, 46, 0.6)',
-    borderColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: colors.surfaceDim,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
   },
   input: {
     flex: 1,
     minHeight: 48,
     ...type.body,
-    color: '#ffffff',
+    color: colors.onSurface,
     ...Platform.select({
       web: {
         outlineStyle: 'none',
@@ -1359,8 +2384,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderColor: colors.glassBorder,
+    backgroundColor: colors.glassBg,
     marginTop: spacing.xs,
   },
   secondaryButtonText: {
@@ -1376,15 +2401,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: colors.glassBg,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
   },
   header: {
     minHeight: 60,
-    backgroundColor: 'rgba(6, 11, 24, 0.8)',
+    backgroundColor: colors.background === '#090D16' ? 'rgba(6, 11, 24, 0.8)' : 'rgba(255, 255, 255, 0.85)',
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+    borderBottomColor: colors.glassBorder,
     paddingHorizontal: spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1403,7 +2428,7 @@ const styles = StyleSheet.create({
     ...type.title,
     flex: 1,
     textAlign: 'center',
-    color: '#f1f5f9',
+    color: colors.onSurface,
   },
   iconButton: {
     width: 38,
@@ -1411,8 +2436,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.default,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.glassBg,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
   },
   actionGrid: {
@@ -1425,8 +2450,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.base,
     padding: spacing.md,
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.glassBg,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
     ...Platform.select({
       web: {
@@ -1452,7 +2477,7 @@ const styles = StyleSheet.create({
   tileTitle: {
     ...type.title,
     fontSize: 16,
-    color: '#ffffff',
+    color: colors.onSurface,
     marginTop: spacing.md,
   },
   tileLabel: {
@@ -1468,8 +2493,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.glassBg,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
     ...Platform.select({
       web: {
@@ -1501,8 +2526,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.glassBg,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
     marginBottom: spacing.sm,
   },
@@ -1536,7 +2561,7 @@ const styles = StyleSheet.create({
     right: spacing.md,
     bottom: spacing.md,
     height: 64,
-    backgroundColor: 'rgba(17, 24, 39, 0.8)', // Slate surface translucent
+    backgroundColor: colors.glassPanelBg, // Dynamic surface translucent
     borderColor: colors.glassBorder,
     borderWidth: 1,
     borderRadius: 32,
@@ -1563,8 +2588,8 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   navItemActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: colors.glassBgActive,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
   },
   navText: {
@@ -1664,10 +2689,10 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     maxHeight: '52%',
-    backgroundColor: 'rgba(17, 24, 39, 0.85)',
+    backgroundColor: colors.glassPanelBg,
     borderTopLeftRadius: radius.base,
     borderTopRightRadius: radius.base,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: colors.glassBorder,
     borderWidth: 1,
     padding: spacing.md,
     ...Platform.select({
@@ -1680,7 +2705,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 4,
     borderRadius: radius.full,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    backgroundColor: colors.secondary,
     alignSelf: 'center',
     marginBottom: spacing.md,
   },
@@ -1700,8 +2725,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: colors.glassBg,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
     marginBottom: spacing.sm,
   },
@@ -1711,31 +2736,31 @@ const styles = StyleSheet.create({
     borderRadius: radius.base,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.glassBg,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
   },
   stepper: {
     width: 90,
     minHeight: 32,
     borderRadius: radius.full,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: colors.glassBg,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: colors.glassBorder,
   },
   stepperBtn: {
     padding: 6,
   },
   stepperText: {
     ...type.code,
-    color: '#ffffff',
+    color: colors.onSurface,
   },
   stepperInput: {
     ...type.code,
-    color: '#ffffff',
+    color: colors.onSurface,
     textAlign: 'center',
     minWidth: 32,
     padding: 0,
@@ -1748,7 +2773,7 @@ const styles = StyleSheet.create({
   modalBackdrop: {
     flex: 1,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(3, 7, 18, 0.6)',
+    backgroundColor: colors.background === '#090D16' ? 'rgba(3, 7, 18, 0.6)' : 'rgba(15, 23, 42, 0.4)',
     ...Platform.select({
       web: {
         backdropFilter: 'blur(8px)',
@@ -1756,8 +2781,8 @@ const styles = StyleSheet.create({
     })
   },
   modalSheet: {
-    backgroundColor: 'rgba(17, 24, 39, 0.9)',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.surface,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
     borderTopLeftRadius: radius.base,
     borderTopRightRadius: radius.base,
@@ -1770,14 +2795,83 @@ const styles = StyleSheet.create({
       }
     })
   },
+  modalCloseBtn: {
+    position: 'absolute',
+    right: spacing.md,
+    top: spacing.md,
+    zIndex: 10,
+    padding: spacing.xs,
+  },
+  detailImageContainer: {
+    width: '100%',
+    height: 180,
+    backgroundColor: colors.glassBg,
+    borderRadius: radius.base,
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.glassBorder,
+    marginTop: spacing.md,
+  },
+  detailImage: {
+    width: '100%',
+    height: '100%',
+  },
+  detailImageFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+  },
+  detailTagRow: {
+    flexDirection: 'row',
+    marginTop: spacing.xs,
+  },
+  supermarketTag: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+    borderRadius: radius.pill,
+  },
+  supermarketTagText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  detailBarcode: {
+    fontSize: 12,
+    color: colors.onSurfaceMuted,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    marginTop: spacing.xxs,
+  },
+  detailDivider: {
+    height: 1,
+    backgroundColor: colors.glassBorder,
+    marginVertical: spacing.sm,
+  },
+  detailPriceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: spacing.xs,
+  },
+  detailPriceText: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: colors.primary,
+  },
+  cartItemContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
   choiceCard: {
     borderRadius: radius.base,
     padding: spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.glassBg,
+    borderColor: colors.glassBorder,
     borderWidth: 1,
     marginBottom: spacing.sm,
   },
@@ -1813,7 +2907,7 @@ const styles = StyleSheet.create({
   },
   metaValue: {
     ...type.code,
-    color: '#ffffff',
+    color: colors.onSurface,
   },
   statusPill: {
     alignSelf: 'flex-start',
@@ -1881,4 +2975,197 @@ const styles = StyleSheet.create({
     ...type.code,
     color: '#d8e3f7',
   },
+  profileCard: {
+    alignItems: 'center',
+    padding: spacing.lg,
+    borderRadius: radius.base,
+    backgroundColor: colors.glassBg,
+    borderColor: colors.glassBorder,
+    borderWidth: 1,
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  avatarLarge: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.sm,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  avatarText: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  profileName: {
+    ...type.title,
+    fontSize: 22,
+    color: colors.onSurface,
+    fontWeight: '700',
+  },
+  profileEmail: {
+    ...type.body,
+    color: colors.secondary,
+  },
+  roleBadge: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 4,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    marginTop: spacing.xs,
+  },
+  roleAdmin: {
+    backgroundColor: 'rgba(37, 99, 235, 0.15)',
+    borderColor: colors.primary,
+  },
+  roleUser: {
+    backgroundColor: 'rgba(156, 163, 175, 0.15)',
+    borderColor: '#9CA3AF',
+  },
+  roleText: {
+    ...type.label,
+    fontSize: 11,
+    color: colors.onSurface,
+  },
+  settingsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: colors.glassBorder,
+  },
+  logoutButton: {
+    minHeight: 52,
+    borderRadius: radius.base,
+    borderColor: 'rgba(239, 68, 68, 0.2)',
+    borderWidth: 1,
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  logoutButtonText: {
+    ...type.body,
+    color: '#EF4444',
+    fontWeight: '600',
+  },
+  centerScanButton: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#10B981', // Emerald green
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: -24, // Protrude upwards
+    borderWidth: 4,
+    borderColor: colors.background, // Match app background
+    ...Platform.select({
+      web: {
+        boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)',
+      },
+      default: {
+        shadowColor: '#10B981',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 6,
+        elevation: 4,
+      }
+    })
+  },
+  modalCenterContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.background === '#090D16' ? 'rgba(3, 7, 18, 0.6)' : 'rgba(15, 23, 42, 0.4)',
+    padding: spacing.lg,
+    ...Platform.select({
+      web: {
+        backdropFilter: 'blur(8px)',
+      }
+    })
+  },
+  confirmModalSheet: {
+    backgroundColor: colors.surface,
+    borderColor: colors.glassBorder,
+    borderWidth: 1,
+    borderRadius: radius.base,
+    padding: spacing.lg,
+    gap: spacing.md,
+    width: '90%',
+    maxWidth: 340,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.3)',
+      }
+    })
+  },
+  adminTabs: {
+    flexDirection: 'row',
+    backgroundColor: colors.background === '#090D16' ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.03)',
+    borderRadius: radius.base,
+    padding: spacing.xs,
+    marginHorizontal: spacing.md,
+    marginTop: spacing.md,
+    gap: spacing.xs,
+  },
+  adminTabBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    borderRadius: radius.sm,
+    gap: spacing.xs,
+  },
+  adminTabBtnActive: {
+    backgroundColor: colors.primary,
+  },
+  adminTabTxt: {
+    ...type.body,
+    fontSize: 13,
+    color: colors.secondary,
+  },
+  adminTabTxtActive: {
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  adminProductCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.glassBorder,
+    borderWidth: 1,
+    borderRadius: radius.base,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  adminProductInfo: {
+    flex: 1,
+    gap: spacing.xxs,
+  },
+  adminProductActions: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+  actionBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.background === '#090D16' ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.05)',
+  },
 });
+
+let styles = createStyles(colors);
