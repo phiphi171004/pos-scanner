@@ -1,0 +1,59 @@
+name: Build Android Release APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 11.1.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: fe/pnpm-lock.yaml
+
+      - name: Install JS Dependencies
+        run: |
+          cd fe
+          pnpm install
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prebuild Android Project
+        run: |
+          cd fe
+          npx expo prebuild --platform android --no-install
+
+      - name: Build Release APK
+        run: |
+          cd fe/android
+          ./gradlew assembleRelease
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: personal-pos-scanner-android
+          path: fe/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
