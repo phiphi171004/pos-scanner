@@ -25,6 +25,13 @@ app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/admin', syncRoutes);
 
+// Health Check Route for UptimeRobot monitoring (HEAD method to save bandwidth)
+app.head('/health', (req, res) => {
+    const mongoose = require('mongoose');
+    const dbState = mongoose.connection.readyState;
+    res.status(dbState === 1 ? 200 : 500).end();
+});
+
 app.get('/', (req, res) => {
     res.send('POS Scanner API is running...');
 });

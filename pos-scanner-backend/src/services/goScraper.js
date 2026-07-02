@@ -247,27 +247,42 @@ async function syncProducts(progressCallback) {
     let created = 0, skipped = 0, failed = 0;
     const errors = [];
 
+    log('Đang kiểm tra sản phẩm đã có trong cơ sở dữ liệu...');
+    const existingProducts = await Product.find({ supermarket: { $in: ['GO!', 'Big C'] } });
+    const existingMap = new Map(existingProducts.map(p => [p.barcode, p]));
+
+    const toInsert = [];
     for (const raw of uniqueProducts) {
         const product = normalizeProduct(raw, config.supermarketName);
-        try {
-            const existing = await Product.findOne({ 
-                barcode: product.barcode, 
-                supermarket: { $in: ['GO!', 'Big C'] } 
-            });
-            if (existing) {
-                if (existing.supermarket !== product.supermarket) {
-                    existing.supermarket = product.supermarket;
-                    await existing.save();
-                }
-                skipped++;
-                continue;
+        const existing = existingMap.get(product.barcode);
+        if (existing) {
+            if (existing.supermarket !== product.supermarket) {
+                existing.supermarket = product.supermarket;
+                await existing.save();
             }
+            skipped++;
+            continue;
+        }
+        toInsert.push(product);
+    }
 
-            await Product.create(product);
-            created++;
+    if (toInsert.length > 0) {
+        log(`Đang lưu ${toInsert.length} sản phẩm mới vào cơ sở dữ liệu...`);
+        try {
+            await Product.insertMany(toInsert, { ordered: false });
+            created = toInsert.length;
         } catch (err) {
-            failed++;
-            errors.push({ barcode: product.barcode, error: err.message });
+            const insertedCount = err.writeErrors ? (toInsert.length - err.writeErrors.length) : 0;
+            created = insertedCount;
+            failed = toInsert.length - insertedCount;
+            if (err.writeErrors) {
+                err.writeErrors.forEach(we => {
+                    errors.push({
+                        barcode: toInsert[we.index]?.barcode,
+                        error: we.errmsg || 'Lỗi lưu sản phẩm'
+                    });
+                });
+            }
         }
     }
 

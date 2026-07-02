@@ -26,8 +26,7 @@
       [
         "react-native-vision-camera",
         {
-          "cameraPermissionText": "Ứng dụng cần quyền sử dụng máy ảnh để quét mã vạch sản phẩm.",
-          "enableCodeScanner": true
+          "cameraPermissionText": "Ứng dụng cần quyền sử dụng máy ảnh để quét mã vạch sản phẩm."
         }
       ],
       "expo-secure-store"
