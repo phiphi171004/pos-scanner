@@ -511,6 +511,33 @@ function AuthScreen({ mode, setMode, onDone }) {
   const [email, setEmail] = useState('example@retail.com');
   const [password, setPassword] = useState('123456');
 
+  // Hidden developer settings to configure Custom API URL without rebuilding the app
+  const [clickCount, setClickCount] = useState(0);
+  const [showConfigModal, setShowConfigModal] = useState(false);
+  const [customApiUrl, setCustomApiUrl] = useState('');
+
+  useEffect(() => {
+    if (showConfigModal) {
+      setCustomApiUrl(api.getApiUrl());
+    }
+  }, [showConfigModal]);
+
+  const handleLogoPress = () => {
+    const nextCount = clickCount + 1;
+    if (nextCount >= 5) {
+      setClickCount(0);
+      setShowConfigModal(true);
+    } else {
+      setClickCount(nextCount);
+    }
+  };
+
+  const handleSaveApiUrl = async () => {
+    await api.setApiIp(customApiUrl);
+    setShowConfigModal(false);
+    alert('Đã cập nhật địa chỉ API Backend thành công! Ứng dụng sẽ sử dụng cấu hình mới.');
+  };
+
   const handleSubmit = () => {
     onDone({ name, email, password });
   };
@@ -519,9 +546,9 @@ function AuthScreen({ mode, setMode, onDone }) {
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.authScroll} showsVerticalScrollIndicator={false}>
         <View style={styles.authWrap}>
-          <View style={styles.logo}>
+          <Pressable onPress={handleLogoPress} style={styles.logo}>
             <MaterialCommunityIcons name="barcode-scan" size={38} color="#ffffff" />
-          </View>
+          </Pressable>
           <Text style={styles.appTitle}>POS Scanner</Text>
           <Text style={styles.kicker}>Hệ thống quét cá nhân</Text>
 
@@ -540,6 +567,41 @@ function AuthScreen({ mode, setMode, onDone }) {
           </Pressable>
         </View>
       </ScrollView>
+
+      {/* Hidden API Domain Config Modal */}
+      <Modal visible={showConfigModal} transparent animationType="fade">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <View style={{ backgroundColor: '#1e293b', borderRadius: 16, width: '100%', maxWidth: 400, padding: 24, borderWidth: 1, borderColor: '#334155' }}>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#ffffff', marginBottom: 8, textAlign: 'center' }}>Cấu hình API Backend</Text>
+            <Text style={{ fontSize: 13, color: '#94a3b8', marginBottom: 20, textAlign: 'center' }}>Nhập tên miền API (không cần nhập /api ở cuối)</Text>
+            
+            <TextInput
+              style={{ backgroundColor: '#0f172a', color: '#ffffff', borderRadius: 8, padding: 12, fontSize: 15, borderWidth: 1, borderColor: '#475569', marginBottom: 20 }}
+              placeholder="https://api.lhu-dashboard.me"
+              placeholderTextColor="#475569"
+              value={customApiUrl}
+              onChangeText={setCustomApiUrl}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+              <Pressable 
+                onPress={() => setShowConfigModal(false)}
+                style={{ flex: 1, backgroundColor: '#334155', padding: 12, borderRadius: 8, alignItems: 'center' }}
+              >
+                <Text style={{ color: '#ffffff', fontWeight: '600' }}>Hủy</Text>
+              </Pressable>
+              <Pressable 
+                onPress={handleSaveApiUrl}
+                style={{ flex: 1, backgroundColor: '#3b82f6', padding: 12, borderRadius: 8, alignItems: 'center' }}
+              >
+                <Text style={{ color: '#ffffff', fontWeight: '600' }}>Lưu</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

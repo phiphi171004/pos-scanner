@@ -1,15 +1,3 @@
-import { Platform } from 'react-native';
-
-let BASE_URL = 'https://api.shopaccsheap.pro.vn/api';
-
-export const setApiIp = (ip) => {
-    // Hardcoded production URL, setting IP is disabled
-};
-
-export const getApiUrl = () => {
-    return BASE_URL;
-};
-
 // SecureStore conditional loading
 let SecureStore = null;
 try {
@@ -64,6 +52,38 @@ const secureStorage = {
         delete globalMemoryStorage[key];
     }
 };
+
+let BASE_URL = 'https://api.lhu-dashboard.me/api';
+
+// Initialize Custom API Url from storage on load
+secureStorage.getItem('CUSTOM_API_URL').then(storedUrl => {
+    if (storedUrl) {
+        BASE_URL = storedUrl;
+        console.log('Loaded CUSTOM_API_URL:', BASE_URL);
+    }
+}).catch(err => {
+    console.warn('Failed to load CUSTOM_API_URL:', err);
+});
+
+export const setApiIp = async (url) => {
+    if (!url) return;
+    let formattedUrl = url.trim();
+    if (!formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
+        formattedUrl = `https://${formattedUrl}`;
+    }
+    if (!formattedUrl.endsWith('/api') && !formattedUrl.endsWith('/api/')) {
+        formattedUrl = formattedUrl.endsWith('/') ? `${formattedUrl}api` : `${formattedUrl}/api`;
+    }
+    BASE_URL = formattedUrl;
+    await secureStorage.setItem('CUSTOM_API_URL', formattedUrl);
+    console.log('API URL updated to:', BASE_URL);
+};
+
+export const getApiUrl = () => {
+    return BASE_URL;
+};
+
+
 
 // Event Listeners for Silent Token Refresh and Expiration
 let tokenRefreshListeners = [];
